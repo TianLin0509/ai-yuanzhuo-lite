@@ -45,6 +45,10 @@ try{
  checks.push('Reread reuses response boundary and never sends a second prompt');
  await panel.locator('#prompt').fill('第二轮：只补充检查清单。');await panel.locator('#iterate').click();await done(2);state=await getState();assert.equal(state.session.rounds.length,2);for(const page of Object.values(tabs))assert.equal((await page.evaluate(()=>__fixture.sent))[1],'第二轮：只补充检查清单。');
  await panel.reload();await panel.waitForSelector('.answer');state=await getState();assert.equal(state.session.rounds.length,2);checks.push('Independent iteration exact text and sidepanel reload/history persistence');
+ const preservedFirst=state.session.rounds[0].jobs.map(j=>j.text);
+ for(const operation of ['reread','retry'])await assert.rejects(()=>command('job',{sessionId,roundId:state.session.rounds[0].id,jobId:firstJob.id,operation,confirmDuplicate:true}),/历史轮次/);
+ state=await getState();assert.deepEqual(state.session.rounds[0].jobs.map(j=>j.text),preservedFirst);assert.equal((await tabs.deepseek.evaluate(()=>__fixture.sent)).length,2);
+ checks.push('Historical reread/retry rejected without replacing old answers or dispatching another prompt');
  await panel.locator('#prompt').fill('请比较分歧。');await panel.locator('#discuss').click();await done(3);state=await getState();assert.equal(state.session.rounds.at(-1).kind,'discuss');assert(state.session.rounds.at(-1).jobs.every(j=>j.prompt.includes('END_MARKER')));
  checks.push('Discussion includes complete prior answers');
  await panel.locator('#summary').click();await panel.locator('#captain').selectOption('kimi');await panel.locator('#depth').selectOption('深入分析');await panel.locator('[data-modal="summary"]').click();
