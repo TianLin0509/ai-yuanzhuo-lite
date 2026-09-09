@@ -49,8 +49,17 @@ try{
  for(const operation of ['reread','retry'])await assert.rejects(()=>command('job',{sessionId,roundId:state.session.rounds[0].id,jobId:firstJob.id,operation,confirmDuplicate:true}),/历史轮次/);
  state=await getState();assert.deepEqual(state.session.rounds[0].jobs.map(j=>j.text),preservedFirst);assert.equal((await tabs.deepseek.evaluate(()=>__fixture.sent)).length,2);
  checks.push('Historical reread/retry rejected without replacing old answers or dispatching another prompt');
- await panel.locator('#prompt').fill('请比较分歧。');await panel.locator('#discuss').click();await done(3);state=await getState();assert.equal(state.session.rounds.at(-1).kind,'discuss');assert(state.session.rounds.at(-1).jobs.every(j=>j.prompt.includes('END_MARKER')));
- checks.push('Discussion includes complete prior answers');
+ const priorAnswers=Object.fromEntries(state.session.rounds.at(-1).jobs.map(j=>[j.provider,j.text]));
+ await panel.locator('#prompt').fill('请比较分歧。');await panel.locator('#discuss').click();await done(3);state=await getState();assert.equal(state.session.rounds.at(-1).kind,'discuss');
+ const peerMatrix={deepseek:['kimi','doubao'],kimi:['deepseek','doubao'],doubao:['deepseek','kimi']};
+ for(const [provider,page] of Object.entries(tabs)){
+  const sent=await page.evaluate(()=>__fixture.sent);assert.equal(sent.length,3);const prompt=sent[2];
+  assert.equal(prompt,state.session.rounds.at(-1).jobs.find(j=>j.provider===provider).prompt);
+  assert(!prompt.includes(priorAnswers[provider]),provider+' must not receive its own answer');
+  assert(!prompt.includes('【'+PROVIDERS[provider].name+' 的回答】:'));
+  for(const peer of peerMatrix[provider]){assert(prompt.includes(priorAnswers[peer]),provider+' must receive full '+peer+' answer');assert(prompt.includes('【'+PROVIDERS[peer].name+' 的回答】:'));}
+ }
+ checks.push('Actual three-site discussion delivery contains each recipient\'s two peers in full and excludes its own answer');
  await panel.locator('#summary').click();await panel.locator('#captain').selectOption('kimi');await panel.locator('#depth').selectOption('深入分析');await panel.locator('[data-modal="summary"]').click();
  await panel.waitForFunction(()=>document.querySelectorAll('.answer').length===1&&document.querySelector('.state')?.dataset.status==='done',{},{timeout:30000});state=await getState();assert.equal(state.session.rounds.at(-1).jobs[0].provider,'kimi');checks.push('Captain summary dispatches only selected provider');
  // New round must remain stopped even if fixture answers arrive afterwards.

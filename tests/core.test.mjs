@@ -3,7 +3,33 @@ import assert from 'node:assert/strict';
 import {newSession,makeRound,composePrompts,MAX_PROMPT,acceptEvent,toMarkdown,providerFor,busy} from '../src/core.js';
 const seed=()=>newSession(['deepseek','kimi','doubao']);
 test('原文与多行边界不被隐式改变；各家独立迭代不携带互评材料',()=>{const s=seed(),text='  第一行\n— 第二行\n\n第三行 <>&  ';for(const kind of ['ask','iterate'])assert.deepEqual(composePrompts(kind,text,s).map(p=>p.prompt),[text,text,text]);});
-test('讨论使用完整材料，总结只针对选定队长，不把失败文本当作回答',()=>{const s=seed(),r=makeRound('ask','问题',s);s.rounds.push(r);r.jobs[0].status=r.jobs[1].status='done';r.jobs[0].text='A'.repeat(18000);r.jobs[1].text='KIMI_END';r.jobs[2].status='error';r.jobs[2].text='ERROR_MUST_NOT_BE_INCLUDED';const discussion=composePrompts('discuss','原文要求',s);assert(discussion.every(p=>p.prompt.includes('A'.repeat(18000))&&p.prompt.includes('KIMI_END')&&!p.prompt.includes('ERROR_MUST_NOT_BE_INCLUDED')));const summary=composePrompts('summary','',s,{captain:'kimi',depth:'深入分析'});assert.equal(summary.length,1);assert.equal(summary[0].provider,'kimi');assert(summary[0].prompt.includes('深入分析'));});
+test('三人讨论逐接收者仅转发另外两家的完整回答',()=>{
+ const s=seed(),r=makeRound('ask','问题',s);s.rounds.push(r);
+ const texts={deepseek:'DEEPSEEK_BEGIN\n'+'完整长回答\n'.repeat(3000)+'DEEPSEEK_END',kimi:'KIMI_ONLY\n```js\nconst kimi = 1;\n```',doubao:'DOUBAO_ONLY\n豆包全文'};
+ r.jobs.forEach(j=>{j.status='done';j.text=texts[j.provider];});
+ const expected={deepseek:['kimi','doubao'],kimi:['deepseek','doubao'],doubao:['deepseek','kimi']};
+ const guidance='  保留我的原文\n— 核对分歧\n\n第二段  ';
+ for(const {provider,prompt} of composePrompts('discuss',guidance,s)){
+  assert(!prompt.includes(texts[provider]),provider+' 不应收到自己的回答');
+  for(const peer of expected[provider])assert(prompt.includes(texts[peer]),provider+' 应收到 '+peer+' 的完整回答');
+  assert(prompt.startsWith('用户补充要求：'+guidance+'\n\n'));
+  assert(prompt.includes('以下是其他 AI 对同一问题的回答，请分析他们的观点，指出你认同和不认同的地方，并给出你的改进回答。'));
+  assert(prompt.includes('这是第1轮辩论。请仔细阅读其他参与者的初始回答，找出核心分歧和共识。'));
+ }
+});
+test('两人讨论互换回答；连续讨论仅转发上一轮并推进旧版轮次引导',()=>{
+ const s=newSession(['deepseek','kimi']),r=makeRound('ask','原始问题',s);s.rounds.push(r);r.jobs.forEach(j=>{j.status='done';j.text=j.provider+'_INITIAL';});
+ for(let n=1;n<=4;n++){
+  const round=makeRound('discuss','',s);s.rounds.push(round);
+  for(const job of round.jobs){const peer=job.provider==='deepseek'?'kimi':'deepseek';const previous=n===1?'INITIAL':'ROUND_'+(n-1);assert(job.prompt.includes(peer+'_'+previous));assert(!job.prompt.includes(job.provider+'_'+previous));assert(job.prompt.includes('这是第'+n+'轮辩论。'));if(n>1)assert(!job.prompt.includes('_INITIAL'));job.status='done';job.text=job.provider+'_ROUND_'+n;}
+ }
+});
+test('失败文本不参与讨论；队长总结仍接收全部有效回答（含自己的）',()=>{
+ const s=seed(),r=makeRound('ask','问题',s);s.rounds.push(r);r.jobs[0].status=r.jobs[1].status='done';r.jobs[0].text='DS_COMPLETE';r.jobs[1].text='KIMI_COMPLETE';r.jobs[2].status='error';r.jobs[2].text='ERROR_MUST_NOT_BE_INCLUDED';
+ const prompts=Object.fromEntries(composePrompts('discuss','原文要求',s).map(p=>[p.provider,p.prompt]));
+ assert(!prompts.deepseek.includes('DS_COMPLETE'));assert(prompts.deepseek.includes('KIMI_COMPLETE'));assert(prompts.kimi.includes('DS_COMPLETE'));assert(!prompts.kimi.includes('KIMI_COMPLETE'));assert(prompts.doubao.includes('DS_COMPLETE')&&prompts.doubao.includes('KIMI_COMPLETE'));assert(Object.values(prompts).every(p=>!p.includes('ERROR_MUST_NOT_BE_INCLUDED')));
+ const summary=composePrompts('summary','',s,{captain:'kimi',depth:'深入分析'});assert.equal(summary.length,1);assert.equal(summary[0].provider,'kimi');assert(summary[0].prompt.includes('深入分析'));assert(summary[0].prompt.includes('DS_COMPLETE'));assert(summary[0].prompt.includes('KIMI_COMPLETE'));assert(!summary[0].prompt.includes('ERROR_MUST_NOT_BE_INCLUDED'));
+});
 test('超限明确拒绝，不截断；未满足讨论条件不启动新请求',()=>{const s=seed();assert.throws(()=>composePrompts('ask','字'.repeat(MAX_PROMPT+1),s),/不会自动截断/);assert.throws(()=>composePrompts('discuss','',s),/至少需要两份/);assert.throws(()=>makeRound('ask',' ',s),/先输入/);});
 test('轮次忙时阻止重复发起，新请求身份互不混用',()=>{const s=seed(),r=makeRound('ask','第一题',s);s.rounds.push(r);assert(busy(s));assert.equal(new Set(r.jobs.map(j=>j.requestId)).size,3);assert.throws(()=>makeRound('ask','第二题',s),/本轮仍在进行/);r.jobs.forEach(j=>j.status='done');assert(!busy(s));assert.notEqual(makeRound('ask','第二题',s).id,r.id);});
 test('迟到、乱序、其他标签页与终止后的结果不能覆盖本轮',()=>{const job={requestId:'current',tabId:123,status:'streaming',sequence:5};const event={requestId:'current',sequence:6};assert(acceptEvent(job,event,123));assert(!acceptEvent(job,event,124));assert(!acceptEvent(job,{...event,requestId:'old'},123));assert(!acceptEvent(job,{...event,sequence:5},123));assert(!acceptEvent({...job,status:'stopped'},event,123));assert(!acceptEvent({...job,status:'done'},event,123));});

@@ -16,6 +16,7 @@
 ## 首版功能
 
 - 同题并行回答、原文追问、独立迭代、观点讨论、指定队长总结。
+- 观点讨论沿用 AI-Arena 自由辩论的主提示和轮次引导，每家仅收到其他成员上轮的完整回答；队长总结收齐全部有效回答。
 - 逐成员状态、完整 Markdown / 代码、复制、重新提取、重试发送、跳过、停止。
 - 会话持久化、轮次回看、完整 Markdown 导出、主动删除历史。
 - 网页返回不确定时不会自动重复发送；长时间无结束证据时提示用户核对。
@@ -35,11 +36,13 @@ npm run browser:live
 
 `check` 覆盖构建、全部源码语法、`tests/*.test.mjs` 和真实 MV3 扩展加载的 `tests/extension.mjs`。浏览器测试使用受控网页验证消息链路、完整性、恢复与资源释放，不能宣称真实站点已通过。
 
-当前离线验证为 17 项回归与 10 组扩展链路检查，真实网站测试另有记录。网页 UI 后续更新仍可能需要适配；公司网络、长会话的 CPU / 内存改善尚未量化。
+当前离线验证为 19 项回归与 10 组扩展链路检查，真实网站测试另有记录。网页 UI 后续更新仍可能需要适配；公司网络、长会话的 CPU / 内存改善尚未量化。
 
 `browser:live` 启动独立、可见的 Playwright Chromium，加载当前 `dist`，为三家打开网页。登录由用户在浏览器中完成；脚本不读取、导出或提交 Cookie。Profile 存放在 `C:\VibeData\BrowserProfiles\AI-Yuanzhuo-Lite\live`。服务绑定 127.0.0.1，端口和 PID 写到忽略的 artifacts 中。
 
 浏览器会保留给人工登录和后续实测。重新构建后，先确认没有进行中的圆桌，再通过扩展管理页重新加载扩展并刷新已连接网页。
+
+后台可靠性尚未验收：现有 Playwright 测试浏览器中的非活动标签页仍报告 `document.visibilityState === 'visible'`，不能用它证明普通 Chrome 隐藏、冻结或丢弃标签页时仍可持续提取。真实网页的功能联调与后台生命周期验收必须分开。讨论 prompt 修复及验证更正见 `docs/20260909-peer-prompts-verification-codex.md`。
 
 ## 开发流程
 
@@ -54,7 +57,7 @@ npm run browser:live
 ## 实现参考
 
 - 经确认的 A 方案：原网页在中间，圆桌占右侧；展开卡片不切换主网页。
-- 旧版 AI-Arena：只参考三站 DOM 适配经验，未迁入其调度补丁和完整模块。
+- 旧版 AI-Arena：参考三站 DOM 适配经验，并沿用自由辩论的提示词与排除自身回答的转发规则；未迁入其调度补丁和完整模块。
 - [Chrome sidePanel](https://developer.chrome.com/docs/extensions/reference/api/sidePanel)
 - [MV3 service worker 生命周期](https://developer.chrome.com/docs/extensions/develop/concepts/service-workers/lifecycle)
 - [Playwright 扩展测试](https://playwright.dev/docs/chrome-extensions)
