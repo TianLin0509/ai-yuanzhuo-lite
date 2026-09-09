@@ -14,4 +14,6 @@ Playwright 在 Windows 优先使用已有 `C:\VibeData\BrowserCache\playwright`�
 
 隔离 fixture 能证明程序内部行为，不能证明第三方网页当前兼容，也不能证明公司机器上的性能提升比例。
 
+后台验收必须记录 Chrome 的标签页 active 状态以及页面原生 visibilityState / wasDiscarded，不能只凭标签未被选中就判定已测试隐藏页面。Playwright 的焦点模拟可能使非活动页面仍报告 visible；即使去掉禁用后台节流的启动参数，也不能据此宣称普通浏览器的后台可靠性通过。后续 CDP 附着应使用 noDefaults: true 避免添加焦点模拟，但它不会撤销其他既有连接的模拟。无法建立真实隐藏条件时明确记为未验证，不用临时改写页面可见性来制造通过。
+
 Profile、用户对话、截图、日志在忽略的 artifacts 或 C:\VibeData；不进提交。只操作本次启动的浏览器，不终止生产 Hub，不复制个人 Cookie。
