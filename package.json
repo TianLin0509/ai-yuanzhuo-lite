@@ -1,0 +1,17 @@
+{
+  "name": "ai-yuanzhuo-lite",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "AI圆桌lite：DeepSeek、Kimi、豆包网页圆桌 Chrome 侧栏",
+  "engines": {"node": ">=22"},
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "test:browser": "node tests/extension.mjs",
+    "check": "node scripts/check.mjs",
+    "browser:live": "node scripts/live-browser.mjs"
+  },
+  "dependencies": {"dompurify": "3.4.15", "marked": "18.0.12"},
+  "devDependencies": {"playwright": "1.60.0"}
+}

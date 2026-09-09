@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "name": "AI圆桌lite",
+  "trunk": "main",
+  "protectedBranches": ["main", "master", "develop"],
+  "test": [["node", "scripts/check.mjs"]],
+  "testEnv": {"PYTHONUTF8": "1", "PYTHONDONTWRITEBYTECODE": "1"},
+  "versionFiles": [],
+  "versionBump": [],
+  "afterMerge": [],
+  "contracts": {"author": ".agents/AUTHOR.md", "merger": ".agents/MERGER.md"},
+  "worktreeRoot": "../ai-yuanzhuo-lite-worktrees",
+  "worktreeHint": "Each task installs its own npm ci dependencies. Read .agents/TESTING.md. No dependency junctions.",
+  "notes": [
+    "Explicit releases only; no version bump, remote push, or publication on ordinary merges.",
+    "Chrome MV3, Mock A sidepanel; initial providers DeepSeek, Kimi and Doubao.",
+    "Fixture browsers are isolated. Real account login and live site tests are separate from offline merge gates.",
+    "No MAIN world patches, debugger, DNR, PPT, token dashboards, silent truncation, or automatic uncertain resend."
+  ]
+}

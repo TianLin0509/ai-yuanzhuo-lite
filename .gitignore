@@ -1,0 +1,13 @@
+node_modules/
+dist/
+artifacts/
+output/
+__pycache__/
+*.pyc
+.env
+*.log
+*.zip
+*.crx
+*.pem
+*.tsbuildinfo
+.DS_Store

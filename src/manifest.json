@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "AI圆桌lite",
+  "version": "0.1.0",
+  "minimum_chrome_version": "120",
+  "description": "一个问题，多种视角。DeepSeek、Kimi、豆包网页圆桌。",
+  "permissions": ["storage", "scripting", "sidePanel", "tabs", "alarms"],
+  "host_permissions": ["https://chat.deepseek.com/*", "https://www.kimi.com/*", "https://kimi.com/*", "https://kimi.moonshot.cn/*", "https://www.doubao.com/*"],
+  "background": {"service_worker": "background.js", "type": "module"},
+  "side_panel": {"default_path": "sidepanel.html"},
+  "action": {"default_title": "打开 AI圆桌lite"},
+  "content_security_policy": {"extension_pages": "script-src 'self'; object-src 'none'"}
+}

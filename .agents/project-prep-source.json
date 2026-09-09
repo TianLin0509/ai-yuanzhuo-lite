@@ -1,0 +1,10 @@
+{
+  "repository": "https://github.com/TianLin0509/project-prep",
+  "tag": "v0.1.0",
+  "commit": "441d2c732a7c3718acd5b499dccf3e9c218b2925",
+  "templates": {
+    "scripts/merge_task.py": "590bb7208ec532cd30c16e0d08aa808b2fe0fb73300955ab59606ae05bd1513e",
+    ".githooks/pre-commit": "d8fed14aea406fa1a1a4a953152e9abd8754dc5677430c35150e8244c7b6d464",
+    ".githooks/pre-push": "f33ed2d6ce45bda079ccdc489e62ab7dea7d6f9e1a44d36ab70fad8616c50f4e"
+  }
+}
