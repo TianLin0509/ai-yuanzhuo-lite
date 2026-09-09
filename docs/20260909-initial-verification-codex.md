@@ -2,16 +2,36 @@
 
 2026-09-09，本机执行 `npm run check` 通过。
 
-- 7/7 状态与完整性测试通过。
+- 17/17 状态、完整性与网页适配回归通过。
 - 5 个源码 JavaScript 语法检查通过，构建通过。
-- 真实 MV3 扩展加载的受控浏览器链路通过，浏览器部分约 66 秒。
+- 真实 MV3 扩展加载的 10 组受控浏览器链路通过，浏览器部分约 61 秒。
 - 覆盖三家一次性原文发送、思考期间不抓旧答案、完整代码块、非成员页面零注入、结束后零 Observer / 定时器、折叠多开、重读不重发、第二轮独立迭代、侧栏重开、观点讨论、单家队长总结与停止后的迟到结果隔离。
 - 320 / 390 / 530 px 侧栏无页面横向溢出；无浏览器脚本错误。
 
-受控网页通过不代表真实 DeepSeek / Kimi / 豆包已通过。可见隔离 Chromium 148 已加载扩展并打开三站，当前等待用户登录；没有复制个人 Cookie，没有向真实站点发送测试问题。
+## 真实账号联调
+
+用户在可见隔离 Chromium 148 中完成 DeepSeek、Kimi、豆包登录，并亲自通过豆包的人机验证。随后通过扩展 UI 发送测试问题，最终代码完成以下检查：
+
+| 流程 | 真实网页结果 |
+| --- | --- |
+| 三家同题 | 全部自动完成，代码块和结束标记完整 |
+| 三家独立追问 | 全部自动完成，原文作为单条消息发送 |
+| 三家观点讨论 | 全部自动完成，输入包含上轮三份完整回答 |
+| 三家重新提取 | 正文与消息锚点保持一致，不发送新问题 |
+| 指定豆包总结 | 仅向豆包发送，完整总结自动收齐 |
+| 三家停止 | 均停止网页生成，圆桌 stopped 且无错误 |
+| 刷新侧栏、历史与导出 | 历史保持，实际 UI 下载 Markdown 与完整导出逐字一致 |
+| 豆包网页刷新后重新提取 | 总结逐字一致，消息 ID 跨虚拟行重建仍可识别 |
+| 结束后空闲 | 三家 Observer=0、读取定时器=0、activeRequest=null |
+
+实测修复了 Lexical 重复输入、ProseMirror 吞空行、三站新版发送/停止控件、临时会话 URL、虚拟列表、操作栏污染正文及代码块采集。另有回归覆盖历史误读、同站点切换对话、同 URL 手动追加提问、旧请求迟到错误、并发重新提取及验证拦截。
+
+测试中间发现问题的轮次保留为诊断记录，不计入最终通过。最终四轮验收没有用手动确认完成或修改存储伪造结果。没有读取、复制或提交 Cookie；测试 Profile 和原始对话不进入 Git。
 
 性能边界：已验证原生 rAF / setTimeout / setInterval 未被替换，活动读取结束后释放资源。尚未测量真实长会话延迟、CPU / 内存增量或公司机器上的改善比例。
 
 项目整理沿用 project-prep v0.1.0，三个通用脚本与来源模板 SHA-256 一致。首次引导提交之后启用主目录和受保护分支钩子，后续使用独立 worktree。
 
-可复查原始输出在忽略目录 artifacts：`20260909-lite-extension-fixture-codex.json`、`20260909-lite-sidepanel-fixture-codex.png`。真实浏览器连接信息也只在 artifacts，本地 Profile 不进 Git。
+可复查原始输出在忽略目录 artifacts：`20260909-lite-extension-fixture-codex.json`、`20260909-lite-live-final-acceptance-codex.json`、`20260909-lite-live-reread-three-codex.json`、`20260909-lite-real-three-stop-codex.json`、`20260909-lite-real-roundtable-export-codex.md`、`20260909-lite-real-sidepanel-codex.png`。真实浏览器连接信息也只在 artifacts，本地 Profile 不进 Git。
+
+本文件记录 Author 自测，独立 Merger 的 PASS 和实际合并结果另行给出。

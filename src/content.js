@@ -7,18 +7,46 @@
   const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
   const visible=el=>!!el&&el.getClientRects().length>0&&getComputedStyle(el).visibility!=='hidden';
   const available=el=>visible(el)&&!el.disabled&&el.getAttribute('aria-disabled')!=='true';
-  const value=el=>el?.tagName==='TEXTAREA'?el.value:(el?.innerText||'');
+  // innerText inserts extra blank lines between <p> nodes in rich editors.
+  function editableText(node){
+    if(node.nodeType===Node.TEXT_NODE)return node.textContent;
+    if(node.nodeType!==Node.ELEMENT_NODE)return '';
+    if(node.tagName==='BR')return '\n';
+    const children=[...node.childNodes];let text='';
+    for(let i=0;i<children.length;i++){const child=children[i],block=child.nodeType===Node.ELEMENT_NODE&&['P','DIV'].includes(child.tagName);if(i&&block)text+='\n';text+=block&&child.childNodes.length===1&&child.firstChild.nodeName==='BR'?'':editableText(child);}
+    return text;
+  }
+  const value=el=>el?.tagName==='TEXTAREA'?el.value:el?editableText(el):'';
   const normalized=s=>String(s).replace(/\r\n/g,'\n').replace(/\u00a0/g,' ').trim();
   function find(selectors,root=document){for(const selector of selectors){const found=[...root.querySelectorAll(selector)].find(visible);if(found)return found;}return null;}
   function answers(config){for(const selector of config.answer){const found=[...document.querySelectorAll(selector)].filter(el=>visible(el)&&normalized(el.textContent));if(found.length)return found;}return [];}
   function users(config){for(const selector of config.user){const found=[...document.querySelectorAll(selector)].filter(visible);if(found.length)return found;}return [];}
+  const bodyNodes=(element,config)=>!element?[]:config.body&&!element.matches('[data-role="assistant"]')?[...element.querySelectorAll(config.body)]:[element];
+  const answerText=(element,config)=>bodyNodes(element,config).map(node=>node.textContent).join('\n\n');
+  function answerMarkdown(element,config){
+    const lines=bodyNodes(element,config).map(markdown).join('\n\n').split('\n'),output=[];let fence=null,blank=false;
+    for(const line of lines){const marker=line.match(/^\s*(`{3,}|~{3,})/);if(marker){if(!fence)fence=marker[1];else if(marker[1][0]===fence[0]&&marker[1].length>=fence.length)fence=null;}
+      if(!fence&&!line.trim()){if(!blank)output.push('');blank=true;}else{output.push(line);blank=false;}}
+    return output.join('\n').trim();
+  }
   function hash(text){let h=2166136261;for(let i=0;i<text.length;i++)h=Math.imul(h^text.charCodeAt(i),16777619);return (h>>>0).toString(36)+':'+text.length;}
+  function userText(node,config){if(!node)return '';const copy=(config.userBody&&node.querySelector(config.userBody)||node).cloneNode(true);copy.querySelectorAll('button,[role="button"],svg,.icon-button,.kimi-tooltip').forEach(el=>el.remove());return normalized(value(copy));}
+  const promptLetters=text=>String(text).replace(/[\s\p{P}\p{Z}]/gu,'');
+  function ownsUser(job,nodes){
+    const last=nodes.at(-1);if(!last)return false;
+    const text=userText(last,job.config),key=job.config.userKeyAttribute?last.getAttribute(job.config.userKeyAttribute):null;
+    const messageId=job.config.userIdAttribute?last.querySelector('['+job.config.userIdAttribute+']')?.getAttribute(job.config.userIdAttribute):null;
+    if(job.anchor){const same=(job.anchor.key?key===job.anchor.key||job.anchor.messageId&&messageId===job.anchor.messageId:nodes.length===job.anchor.userCount)&&hash(text)===job.anchor.textHash;if(same&&messageId)job.anchor.messageId=messageId;return !!same;}
+    // Virtual lists may remove older rows; stable site message IDs take precedence over row counts.
+    if((key?key===job.baseline.userKey:nodes.length!==job.baseline.userCount+1)||!job.prompt||!promptLetters(text).includes(promptLetters(job.prompt)))return false;
+    job.anchor={userCount:nodes.length,textHash:hash(text),key,messageId};return true;
+  }
   function markdown(node){
     if(node.nodeType===Node.TEXT_NODE)return node.textContent;
     if(node.nodeType!==Node.ELEMENT_NODE)return '';
     const tag=node.tagName;
-    if(['SCRIPT','STYLE','BUTTON','SVG','NOSCRIPT'].includes(tag)||node.getAttribute('aria-hidden')==='true')return '';
-    if(tag==='PRE'){const code=node.querySelector('code')||node;const language=(code.className||'').match(/language-([\w-]+)/)?.[1]||'';const body=code.textContent;const fence='`'.repeat(Math.max(3,...(body.match(/`+/g)||[]).map(s=>s.length+1)));return '\n\n'+fence+language+'\n'+body+'\n'+fence+'\n\n';}
+    if(['SCRIPT','STYLE','BUTTON','SVG','NOSCRIPT'].includes(tag)||node.getAttribute('role')==='button'||node.getAttribute('aria-hidden')==='true'||node.matches('.segment-code-header,.icon-button,.kimi-tooltip'))return '';
+    if(tag==='PRE'||node.matches('.md-code-block,.custom-code-block-container')){const code=node.querySelector('pre code,code,pre')||node;const language=(code.className||'').match(/language-([\w-]+)/)?.[1]||node.querySelector('.md-code-block-banner span')?.textContent?.trim()||'';const body=code.textContent;const fence='`'.repeat(Math.max(3,...(body.match(/`+/g)||[]).map(s=>s.length+1)));return '\n\n'+fence+language+'\n'+body+'\n'+fence+'\n\n';}
     if(tag==='BR')return '\n';
     if(tag==='IMG')return node.getAttribute('alt')?'['+node.getAttribute('alt')+']':'';
     const text=[...node.childNodes].map(markdown).join('');
@@ -32,57 +60,73 @@
     if(tag==='TR')return '\n| '+[...node.children].map(cell=>markdown(cell).trim().replaceAll('|','\\|')).join(' | ')+' |'+(node.parentElement?.tagName==='THEAD'?'\n| '+[...node.children].map(()=>'---').join(' | ')+' |':'');
     return ['P','DIV','SECTION','ARTICLE','UL','OL','TABLE'].includes(tag)?'\n'+text+'\n':text;
   }
-  function snapshot(config){const nodes=answers(config),last=nodes.at(-1);return {count:nodes.length,lastHash:hash(last?.textContent||''),userCount:users(config).length,url:cleanUrl()};}
+  function snapshot(config){const nodes=answers(config),last=nodes.at(-1),userNodes=users(config);return {count:nodes.length,lastHash:hash(answerText(last,config)),userCount:userNodes.length,userKey:config.userKeyAttribute?userNodes.at(-1)?.getAttribute(config.userKeyAttribute):null,url:cleanUrl()};}
   function cleanup(job){if(job.observer){job.observer.disconnect();job.observer=null;diagnostics.observers--;}if(job.timer){clearTimeout(job.timer);job.timer=null;diagnostics.timers--;}if(job.flushTimer){clearTimeout(job.flushTimer);job.flushTimer=null;diagnostics.timers--;}if(diagnostics.activeRequest===job.requestId)diagnostics.activeRequest=null;}
-  function retire(job){cleanup(job);job.cancelled=true;job.lastElement=null;job.lastText='';delete job.prompt;jobs.set(job.requestId,{requestId:job.requestId,status:job.status,sequence:job.sequence,cancelled:true});for(const [key,value] of jobs){if(jobs.size<=32)break;if(value.cancelled)jobs.delete(key);}}
+  function retire(job){cleanup(job);job.cancelled=true;job.lastElement=null;job.userAnchor=null;job.lastText='';delete job.prompt;jobs.set(job.requestId,{requestId:job.requestId,status:job.status,sequence:job.sequence,cancelled:true});for(const [key,value] of jobs){if(jobs.size<=32)break;if(value.cancelled)jobs.delete(key);}}
   function emit(job,status,text=job.lastText,error='',extra={}){
     if(job.cancelled)return;
     job.sequence++;job.status=status;
-    const message={type:'YZ_EVENT',requestId:job.requestId,sequence:job.sequence,status,text,error,url:cleanUrl(),phase:job.dispatched?'attempted':'not_sent',...extra};
-    chrome.runtime.sendMessage(message).then(result=>{if(result?.ok===false){diagnostics.lastError=result.error;cleanup(job);job.cancelled=true;console.warn('[AI圆桌lite] 状态保存失败：',result.error);}}).catch(error=>{diagnostics.lastError=error.message;cleanup(job);job.cancelled=true;console.warn('[AI圆桌lite] 扩展连接中断：',error.message);});
+    const message={type:'YZ_EVENT',requestId:job.requestId,sequence:job.sequence,status,text,error,url:job.expectedUrl,anchor:job.anchor,phase:job.dispatched?'attempted':'not_sent',...extra};
+    chrome.runtime.sendMessage(message).then(result=>{if(result?.ok===false){diagnostics.lastError=result.error;retire(job);console.warn('[AI圆桌lite] 状态保存失败：',result.error);}}).catch(error=>{diagnostics.lastError=error.message;retire(job);console.warn('[AI圆桌lite] 扩展连接中断：',error.message);});
   }
   function schedule(job,ms=3000){if(job.cancelled||job.timer)return;diagnostics.timers++;job.timer=setTimeout(()=>{diagnostics.timers--;job.timer=null;inspect(job);schedule(job);},ms);}
   function changed(job){job.dirty=true;if(job.cancelled||job.flushTimer)return;diagnostics.timers++;job.flushTimer=setTimeout(()=>{diagnostics.timers--;job.flushTimer=null;inspect(job);},900);}
   function completionMarker(config,element){let root=element;for(let depth=0;root&&depth<4;depth++,root=root.parentElement){if(depth&&config.answer.some(selector=>root.querySelectorAll(selector).length>1))break;if(find(config.complete,root))return true;}return false;}
   function inspect(job,force=false){
     if(job.cancelled||!job.dispatched)return;
+    if(job.config.blocked&&find(job.config.blocked)){emit(job,'attention',job.lastText,'网页要求人机验证。请在原网页完成后重新提取；不会自动重发。');retire(job);return;}
+    const hadAnchor=!!job.anchor,owns=ownsUser(job,users(job.config));
+    // Revalidate on every read, including after a SPA changes URL before replacing DOM.
+    if(hadAnchor&&!owns){emit(job,'attention',job.lastText,'网页中的提问已变化，已停止读取，防止混入其他回答。');retire(job);return;}
     if(!job.sending&&cleanUrl()!==job.expectedUrl){
-      if(!job.boundConversation&&job.config.conversation.test(location.pathname)){job.boundConversation=true;job.expectedUrl=cleanUrl();}
-      else if(job.boundConversation){emit(job,'attention',job.lastText,'网页已切换到其他对话，已停止读取，防止混入别的回答。');cleanup(job);job.cancelled=true;return;}
+      if(owns&&job.navigationOpen&&Date.now()-job.startedAt<60000&&job.config.conversation.test(location.pathname)){job.expectedUrl=cleanUrl();}
+      else if(hadAnchor||job.boundConversation){emit(job,'attention',job.lastText,'网页已切换到其他对话，已停止读取，防止混入别的回答。');retire(job);return;}
     }
-    const busy=!!find(job.config.stop);job.sawBusy ||= busy;
-    if(Date.now()-job.startedAt>10*60*1000){emit(job,'attention',job.lastText,'等待超过 10 分钟，已停止自动读取。可打开网页查看，再重新提取。');cleanup(job);job.cancelled=true;return;}
+    const busy=!!find(job.config.stop)||!!(job.config.busy&&find(job.config.busy));job.sawBusy ||= busy;
+    if(Date.now()-job.startedAt>10*60*1000){emit(job,'attention',job.lastText,'等待超过 10 分钟，已停止自动读取。可打开网页查看，再重新提取。');retire(job);return;}
+    if(!owns){if(Date.now()-job.startedAt>45000){emit(job,'attention',job.lastText,'无法确认网页中本轮提问的位置，请打开原网页核对；不会自动重发。');retire(job);}return;}
     const currentInput=find(job.config.input);
     if(!job.acknowledged&&job.dispatched&&currentInput&&!normalized(value(currentInput))&&(busy||users(job.config).length>job.baseline.userCount)){job.acknowledged=true;emit(job,'sent');}
+    if(job.lastElement&&job.lastText&&!busy&&Date.now()-job.changedAt>45000&&!completionMarker(job.config,job.lastElement)&&!job.sawBusy){emit(job,'attention',answerMarkdown(job.lastElement,job.config),'已读到回答，但网页没有可靠的结束信号。请核对全文后确认完成，或重新提取。',{format:'markdown'});retire(job);return;}
     if(!job.dirty&&!force){if(job.lastElement&&job.lastText&&!busy&&Date.now()-job.changedAt>=2200&&(job.sawBusy||completionMarker(job.config,job.lastElement)))finish(job);return;}
     job.dirty=false;diagnostics.reads++;
     const nodes=answers(job.config),candidate=nodes.at(-1);if(!candidate)return;
-    const raw=candidate.textContent||'',currentHash=hash(raw);
+    const raw=answerText(candidate,job.config),currentHash=hash(raw);
     const isNew=nodes.length>job.baseline.count||currentHash!==job.baseline.lastHash;
     if(!isNew||!normalized(raw))return;
     job.lastElement=candidate;
     if(currentHash!==job.lastHash){job.lastHash=currentHash;job.lastText=raw.trim();job.changedAt=Date.now();job.acknowledged=true;emit(job,'streaming');}
     if(!busy&&Date.now()-job.changedAt>=2200&&(job.sawBusy||completionMarker(job.config,candidate)))finish(job);
-    else if(!busy&&Date.now()-job.changedAt>45000){emit(job,'attention',markdown(candidate).trim(),'已读到回答，但网页没有可靠的结束信号。请核对全文后确认完成，或重新提取。',{format:'markdown'});retire(job);}
+    else if(!busy&&Date.now()-job.changedAt>45000){emit(job,'attention',answerMarkdown(candidate,job.config),'已读到回答，但网页没有可靠的结束信号。请核对全文后确认完成，或重新提取。',{format:'markdown'});retire(job);}
   }
-  function finish(job){const text=markdown(job.lastElement).trim();if(!text){emit(job,'attention',job.lastText,'网页答案为空，未标记完成。');}else emit(job,'done',text,'',{format:'markdown'});retire(job);}
+  function finish(job){const text=answerMarkdown(job.lastElement,job.config);if(!text){emit(job,'attention',job.lastText,'网页答案为空，未标记完成。');}else emit(job,'done',text,'',{format:'markdown'});retire(job);}
   function watch(job){
-    for(const other of jobs.values())if(other!==job&&!other.cancelled){cleanup(other);other.cancelled=true;}
+    for(const other of jobs.values())if(other!==job&&!other.cancelled)retire(other);
     const root=find(job.config.root)||document.body;
     job.observer=new MutationObserver(()=>changed(job));job.observer.observe(root,{childList:true,subtree:true,characterData:true,attributes:true,attributeFilter:['disabled','aria-disabled','aria-label','class']});diagnostics.observers++;diagnostics.activeRequest=job.requestId;job.dirty=true;schedule(job,1000);
   }
   async function fill(input,text){
     input.focus();
     if(input.tagName==='TEXTAREA'){Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(input,text);input.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:text}));input.dispatchEvent(new Event('change',{bubbles:true}));}
-    else{const selection=getSelection(),range=document.createRange();range.selectNodeContents(input);selection.removeAllRanges();selection.addRange(range);const inserted=document.execCommand('insertText',false,text);if(!inserted)throw new Error('该网页未接受文字输入，请打开原网页检查。');input.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:text}));}
+    else{
+      const selection=getSelection(),range=document.createRange();range.selectNodeContents(input);selection.removeAllRanges();selection.addRange(range);
+      // Let Lexical / ProseMirror perform their own complete multiline paste.
+      // Do not dispatch a second insertText event: Lexical may insert it twice.
+      const clipboardData=new DataTransfer();clipboardData.setData('text/plain',text);
+      if(input.matches('.ProseMirror'))clipboardData.setData('text/html',text.split('\n').map(line=>'<p style="white-space: pre-wrap">'+(line?line.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;'):'<br>')+'</p>').join(''));
+      const paste=new ClipboardEvent('paste',{clipboardData,bubbles:true,cancelable:true});input.dispatchEvent(paste);
+      await sleep(50);
+      if(!paste.defaultPrevented&&!value(input)){const inserted=document.execCommand('insertText',false,text);if(!inserted)throw new Error('该网页未接受文字输入，请打开原网页检查。');}
+    }
     await sleep(120);
     if(normalized(value(input))!==normalized(text))throw new Error('网页输入内容与原文不一致，已取消发送，请检查原网页。');
   }
   function prepare(message){
     const config=globalThis.YuanzhuoAdapters[message.provider];if(!config)throw new Error('不支持该网页。');
+    if(config.blocked&&find(config.blocked))throw new Error('网页要求人机验证，请先在原网页完成验证。');
     const input=find(config.input);if(!input)throw new Error('未找到可用输入框。请先打开网页完成登录或验证。');
     if(normalized(value(input)))throw new Error('该网页有尚未发送的内容。请先处理原网页草稿，再重试。');
-    if(find(config.stop))throw new Error('该网页仍在生成其他回答，请等待结束。');
+    if(find(config.stop)||(config.busy&&find(config.busy)))throw new Error('该网页仍在生成其他回答，请等待结束。');
     return {baseline:snapshot(config),url:cleanUrl()};
   }
   async function send(message){
@@ -92,23 +136,25 @@
     if(normalized(value(input)))throw new Error('发送前发现网页已有草稿，未覆盖或发送。');
     if(cleanUrl()!==message.baseline.url)throw new Error('发送前网页对话已变化，已取消发送。');
     const job={...message,config,sequence:0,startedAt:Date.now(),changedAt:Date.now(),lastText:'',lastHash:'',expectedUrl:cleanUrl(),boundConversation:config.conversation.test(location.pathname),cancelled:false,dispatched:false,sawBusy:false,acknowledged:false,sending:true,status:'sending'};
+    job.navigationOpen=!job.boundConversation||/\/chat\/local[_-]/.test(location.pathname);
     jobs.set(job.requestId,job);
     try{
       await fill(input,message.prompt);if(job.cancelled)return {status:'stopped'};
       let button=find(config.send);
       for(let i=0;i<8&&!available(button);i++){await sleep(160);if(job.cancelled)return {status:'stopped'};button=find(config.send);}
-      if(!available(button)){cleanup(job);job.cancelled=true;throw new Error('未找到可用发送按钮，文字保留在网页中，未自动按回车或重试。');}
+      if(!available(button)){retire(job);throw new Error('未找到可用发送按钮，文字保留在网页中，未自动按回车或重试。');}
       job.dispatched=true;watch(job);button.click();job.sending=false;
       emit(job,'unconfirmed','', '已点击发送，正在核对网页响应；不要重复发送。');
       await sleep(450);inspect(job,true);
       return {status:job.status,phase:'attempted'};
-    }catch(error){cleanup(job);job.cancelled=true;throw error;}
+    }catch(error){retire(job);throw error;}
   }
   function reread(message){
     const config=globalThis.YuanzhuoAdapters[message.provider];
     if(!config||!message.baseline)throw new Error('缺少本轮回答锚点，无法安全重新提取。');
     if(message.url&&cleanUrl()!==message.url&&config.conversation.test(new URL(message.url).pathname))throw new Error('原网页已切换对话，请先回到本轮原网页。');
     const job={...message,config,sequence:0,startedAt:Date.now(),changedAt:Date.now(),lastText:'',lastHash:'',expectedUrl:cleanUrl(),boundConversation:config.conversation.test(location.pathname),cancelled:false,dispatched:true,sawBusy:false,acknowledged:true,sending:false,status:'sent'};
+    if(!ownsUser(job,users(config)))throw new Error('网页最新提问不属于本轮，无法安全重新提取。请保留原回答并在圆桌中新开一轮。');
     jobs.set(job.requestId,job);watch(job);inspect(job,true);return {status:job.status};
   }
   function stop(message){const job=jobs.get(message.requestId);if(job&&!job.cancelled){const button=message.stopGeneration?find(job.config.stop):null;job.status='stopped';retire(job);if(available(button)){button.click();return {stopped:true,pageStopped:true};}}return {stopped:true,pageStopped:false};}
