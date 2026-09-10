@@ -5,27 +5,33 @@ import vm from 'node:vm';
 import * as core from '../src/core.js';
 import {createBackgroundSupport} from '../src/background-support.js';
 
-async function harness({oldRound=false,wrongTab=false,sendFails=false,onSend,focusFails=false,onInject,onAttach}={}){
+async function harness({oldRound=false,wrongTab=false,sendFails=false,onSend,focusFails=false,onInject,onAttach,configure,tabUrl,onTargets}={}){
  const s=core.newSession(['deepseek','kimi']);const first=core.makeRound('ask','first question',s);s.rounds.push(first);
  s.bindings={deepseek:{tabId:1,url:'https://chat.deepseek.com/a/chat/s/original'},kimi:{tabId:2,url:'https://www.kimi.com/chat/original'}};
  for(const j of first.jobs)Object.assign(j,{status:'done',text:'FIRST ANSWER',format:'markdown',phase:'attempted',tabId:s.bindings[j.provider].tabId,url:s.bindings[j.provider].url,baseline:{count:0,lastHash:'',userCount:0,url:s.bindings[j.provider].url}});
  if(oldRound){const next=core.makeRound('iterate','second question',s);s.rounds.push(next);for(const j of next.jobs)Object.assign(j,{status:'streaming',tabId:s.bindings[j.provider].tabId});}
+ if(configure)configure(s);
  const data={'arena.index':{schema:1,currentId:s.id,sessions:[{id:s.id,title:s.title,updatedAt:0,rounds:s.rounds.length}]},['arena.session.'+s.id]:s},calls=[];
  const noop=()=>{};let onDetach;const debuggerCalls=[];const chrome={
   storage:{session:{get:async key=>structuredClone({[key]:data[key]}),set:async values=>Object.assign(data,structuredClone(values))},local:{get:async key=>structuredClone({[key]:data[key]}),set:async values=>Object.assign(data,structuredClone(values)),remove:async key=>{delete data[key];}}},
-  debugger:{attach:async({tabId})=>{debuggerCalls.push(['attach',tabId]);if(onAttach)await onAttach(tabId);},sendCommand:async({tabId},method)=>{debuggerCalls.push([method,tabId]);if(focusFails&&method==='Emulation.setFocusEmulationEnabled')throw Error('test focus failure');},detach:async({tabId})=>debuggerCalls.push(['detach',tabId]),onDetach:{addListener:fn=>{onDetach=fn;}}},
+  debugger:{getTargets:async()=>onTargets?onTargets():Object.values(s.bindings).map(b=>({tabId:b.tabId,id:'target-'+b.tabId,type:'page'})),attach:async({tabId})=>{debuggerCalls.push(['attach',tabId]);if(onAttach)await onAttach(tabId);},sendCommand:async({tabId},method)=>{debuggerCalls.push([method,tabId]);if(focusFails&&method==='Emulation.setFocusEmulationEnabled')throw Error('test focus failure');},detach:async({tabId})=>debuggerCalls.push(['detach',tabId]),onDetach:{addListener:fn=>{onDetach=fn;}}},
   sidePanel:{setPanelBehavior:async()=>{}},scripting:{executeScript:async args=>{if(onInject)await onInject(args.target.tabId);return [];}},windows:{update:async()=>{}},
-  tabs:{get:async id=>({id,status:'complete',url:id===1&&wrongTab?'https://chat.deepseek.com/a/chat/s/unrelated':Object.values(s.bindings).find(b=>b.tabId===id).url}),sendMessage:async(tabId,message)=>{calls.push({tabId,...message});if(message.type==='YZ_SEND'&&onSend)return onSend(message);if(message.type==='YZ_SEND'&&sendFails)throw Error('test send failure');if(message.type==='YZ_PREPARE'){const url=Object.values(s.bindings).find(b=>b.tabId===tabId).url;return {ok:true,baseline:{count:1,lastHash:'base',userCount:1,url},url};}return {ok:true};}},
+  tabs:{get:async id=>({id,status:'complete',url:tabUrl?.(id)??(id===1&&wrongTab?'https://chat.deepseek.com/a/chat/s/unrelated':Object.values(s.bindings).find(b=>b.tabId===id).url)}),sendMessage:async(tabId,message)=>{calls.push({tabId,...message});if(message.type==='YZ_SEND'&&onSend)return onSend(message);if(message.type==='YZ_SEND'&&sendFails)throw Error('test send failure');if(message.type==='YZ_PREPARE'){const url=Object.values(s.bindings).find(b=>b.tabId===tabId).url;return {ok:true,baseline:{count:1,lastHash:'base',userCount:1,url},url};}return {ok:true};}},
   alarms:{get:async()=>null,create:async()=>{},clear:async()=>{},onAlarm:{addListener:noop}},
   runtime:{onMessage:{addListener:noop},onInstalled:{addListener:noop},onStartup:{addListener:noop}}
  };
  chrome.tabs.onUpdated={addListener:noop};chrome.tabs.update=async()=>{};
  const box={...core,createBackgroundSupport,chrome,structuredClone,console,setTimeout,URL,Date};
  const source=fs.readFileSync(new URL('../src/background.js',import.meta.url),'utf8').replace(/^import[^\n]*\n/gm,'');
- vm.runInNewContext(source+'\nglobalThis.audit={ready,command};',box);await box.audit.ready;
+ vm.runInNewContext(source+'\nglobalThis.audit={ready,command,supportLost};',box);await box.audit.ready;
  const job=first.jobs[0],args={sessionId:s.id,roundId:first.id,jobId:job.id};
- return {command:box.audit.command,calls,args,s,job,data,debuggerCalls,onDetach};
+ return {command:box.audit.command,supportLost:box.audit.supportLost,calls,args,s,job,data,debuggerCalls,onDetach};
 }
+
+test('Restart loss updates the old job but cannot message a replacement or unverified debugger target',async()=>{
+ for(const mode of ['replacement','lookup-failure','same']){const h=await harness({oldRound:true,onTargets:()=>{if(mode==='lookup-failure')throw Error('target lookup failed');return [{tabId:1,type:'page',id:mode==='same'?'target-1':'replacement'}];}});const job=h.s.rounds.at(-1).jobs[0];
+ await h.supportLost({tabId:1,targetId:'target-1',requestId:job.requestId,reason:'restart'});assert.equal(h.calls.filter(c=>c.type==='YZ_STOP').length,mode==='same'?1:0,mode+' must not receive an unowned STOP');assert(!core.ACTIVE.has((await h.command({action:'state'})).session.rounds.at(-1).jobs[0].status));}
+});
 
 test('Required background support failure blocks the website SEND boundary',async()=>{
  const h=await harness({focusFails:true});const result=await h.command({action:'start',sessionId:h.s.id,kind:'ask',text:'background required'});
@@ -54,6 +60,15 @@ test('Same-site navigation blocks both new dispatch and reread',async()=>{
  await assert.rejects(()=>h.command({action:'job',...h.args,operation:'reread'}),/其他对话/);
  const state=await h.command({action:'start',sessionId:h.args.sessionId,kind:'iterate',text:'new question'});
  const job=state.session.rounds.at(-1).jobs[0];assert.equal(job.status,'error');assert(job.error.includes('其他对话'));assert(!h.calls.some(c=>c.tabId===1&&['YZ_SEND','YZ_REREAD'].includes(c.type)));
+});
+
+test('Doubao provisional route can be reread with a saved message anchor, but cannot send or accept a stable-route switch',async()=>{
+ const configure=s=>{s.members[0]='doubao';delete s.bindings.deepseek;s.bindings.doubao={tabId:1,url:'https://www.doubao.com/chat/local_123'};Object.assign(s.rounds[0].jobs[0],{provider:'doubao',status:'attention',url:s.bindings.doubao.url,anchor:{key:'block_c036e5b0-acb4-11f1-ad19-afd4128d612e',textHash:'saved-hash'}});};
+ const h=await harness({configure,tabUrl:id=>id===1?'https://www.doubao.com/chat/987654':undefined});
+ const state=await h.command({action:'job',...h.args,operation:'reread'});assert.equal(h.calls.filter(c=>c.type==='YZ_REREAD').length,1);assert(!h.calls.some(c=>c.type==='YZ_SEND'));assert.equal(state.session.bindings.doubao.url,'https://www.doubao.com/chat/local_123','Binding must await page identity verification');
+ for(const stable of [false,true]){const bad=await harness({configure:s=>{configure(s);if(stable){s.bindings.doubao.url='https://www.doubao.com/chat/111';s.rounds[0].jobs[0].url=s.bindings.doubao.url;}else delete s.rounds[0].jobs[0].anchor;},tabUrl:id=>id===1?'https://www.doubao.com/chat/987654':undefined});await assert.rejects(()=>bad.command({action:'job',...bad.args,operation:'reread'}),/其他对话/);assert(!bad.calls.some(c=>c.type==='YZ_REREAD'));}
+ for(const key of ['0','own-row']){const bad=await harness({configure:s=>{configure(s);s.rounds[0].jobs[0].anchor.key=key;},tabUrl:id=>id===1?'https://www.doubao.com/chat/987654':undefined});await assert.rejects(()=>bad.command({action:'job',...bad.args,operation:'reread'}),/其他对话/);assert(!bad.calls.some(c=>c.type==='YZ_REREAD'));}
+ const send=await harness({configure,tabUrl:id=>id===1?'https://www.doubao.com/chat/987654':undefined});await send.command({action:'start',sessionId:send.s.id,kind:'ask',text:'must not send across routes'});assert(!send.calls.some(c=>c.tabId===1&&c.type==='YZ_SEND'));
 });
 
 test('Failed retry has no stale answer that could be confirmed as success',async()=>{

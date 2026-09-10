@@ -3,7 +3,9 @@ globalThis.YuanzhuoAdapters = {
   deepseek: {
     input:['#chat-input','textarea[placeholder]'],
     answer:['.ds-markdown','[data-role="assistant"]'],
-    user:['[data-role="user"]','[class*="user-message"]','.fbb737a4'],
+    user:['[data-virtual-list-item-key]:has(.fbb737a4)','[data-role="user"]','[class*="user-message"]','.fbb737a4'],
+    userBody:'.fbb737a4',
+    userKeyAttribute:'data-virtual-list-item-key',
     send:['[data-testid="send-button"]','[role="button"].ds-button--primary.ds-button--circle:has(svg path[d^="M8.3125 0.981587"])','button[aria-label*="发送"]','button[aria-label*="Send"]','[role="button"][aria-label*="发送"]'],
     stop:['[role="button"].ds-button--circle:has(svg path[d^="M2 4.88C2 3.68009"])','button[aria-label*="停止"]','button[aria-label*="Stop"]','[role="button"][aria-label*="停止"]','[data-testid="stop-button"]'],
     complete:['[data-testid="copy-button"]','[role="button"]:has(svg path[d^="M6.14929 4.02032"])','button[aria-label*="复制"]','[role="button"][aria-label*="复制"]','button[aria-label*="Copy"]'],
@@ -36,6 +38,7 @@ globalThis.YuanzhuoAdapters = {
     busy:['.md-box-root[data-streaming="true"]'],
     root:['main','[role="main"]','[class*="message-list"]'],
     blocked:['iframe[src*="verifycenter/captcha"]'],
+    unsupported:['[data-feishu-office-current-doc-old-card]'],
     conversation:/\/chat\/[^/?]+/
   }
 };

@@ -5,10 +5,15 @@ import {providerFor} from './core.js';
 export function createBackgroundSupport(api,{onLost,onError}){
  const KEY='arena.background.leases',leases=new Map();let queue=Promise.resolve();
  const run=fn=>{const task=queue.then(fn);queue=task.catch(()=>{});return task;};
- const persist=()=>api.storage.session.set({[KEY]:[...leases.values()].map(({tabId,requestId,provider,autoDiscardable,attached})=>({tabId,requestId,provider,autoDiscardable,attached}))});
+ // storage.session is cleared by extension reload/update. The resource journal
+ // must survive those events, while target identity prevents stale tab-ID reuse.
+ const persist=()=>api.storage.local.set({[KEY]:[...leases.values()].map(({tabId,targetId,requestId,provider,autoDiscardable,attached})=>({tabId,targetId,requestId,provider,autoDiscardable,attached}))});
+ const targetFor=async tabId=>(await api.debugger.getTargets()).find(target=>target.tabId===tabId&&target.type==='page');
  const gone=e=>/No tab with id|Invalid tab ID|not attached|No target with given id/i.test(e.message);
  async function cleanup(lease){
   lease.releasing=true;const errors=[];
+  const target=await targetFor(lease.tabId);
+  if(!lease.targetId||target?.id!==lease.targetId){if(leases.get(lease.tabId)===lease)leases.delete(lease.tabId);await persist();return;}
   if(lease.attached){
    try{await api.debugger.detach({tabId:lease.tabId});lease.attached=false;}catch(e){if(gone(e))lease.attached=false;else errors.push(e);}
   }
@@ -19,19 +24,19 @@ export function createBackgroundSupport(api,{onLost,onError}){
  }
  async function lost(lease,reason){
   let cleanupError;try{await cleanup(lease);}catch(e){cleanupError=e;}
-  await onLost({tabId:lease.tabId,requestId:lease.requestId,reason:reason+(cleanupError?'；'+cleanupError.message:'')});
+  await onLost({tabId:lease.tabId,targetId:lease.targetId,requestId:lease.requestId,reason:reason+(cleanupError?'；'+cleanupError.message:'')});
   if(cleanupError)throw cleanupError;
  }
  function interrupt(lease,reason,detached=false){
   if(!lease||lease.releasing||lease.lost)return;lease.lost=true;if(detached)lease.attached=false;
   // Invalidate the business request immediately, even if another tab's attach is pending.
-  const notified=Promise.resolve(onLost({tabId:lease.tabId,requestId:lease.requestId,reason}));notified.catch(onError);
+  const notified=Promise.resolve(onLost({tabId:lease.tabId,targetId:lease.targetId,requestId:lease.requestId,reason}));notified.catch(onError);
   run(async()=>{await cleanup(lease);await notified;}).catch(onError);
  }
  api.debugger.onDetach.addListener((source,reason)=>interrupt(leases.get(source.tabId),'Chrome 已断开后台支持（'+reason+'）',true));
  api.tabs.onUpdated.addListener((tabId,change,tab)=>{const lease=leases.get(tabId);if(lease&&change.url&&providerFor(tab.url)!==lease.provider)interrupt(lease,'标签页已离开本轮 AI 网站');});
  const ready=run(async()=>{
-  const stored=await api.storage.session.get(KEY);
+  const stored=await api.storage.local.get(KEY);
   // Restore the whole journal before any cleanup persists a new snapshot.
   for(const item of stored[KEY]||[])leases.set(item.tabId,{...item});
   for(const lease of [...leases.values()])try{await lost(lease,'扩展连接已重新启动，请核对原网页后重新提取');}catch(error){onError(error);}
@@ -43,7 +48,8 @@ export function createBackgroundSupport(api,{onLost,onError}){
    const existing=leases.get(tabId);if(existing){if(existing.requestId===requestId&&!existing.lost&&!existing.releasing)return;throw new Error('该网页已有进行中的后台读取，请先等待或停止。');}
    const tab=await api.tabs.get(tabId);if(providerFor(tab.url)!==provider)throw new Error('后台支持仅用于本轮绑定的 AI 网站。');
    if(tab.discarded)throw new Error('网页已被 Chrome 回收，请先打开原网页恢复，再重试；尚未发送。');
-   const lease={tabId,requestId,provider,autoDiscardable:tab.autoDiscardable,attached:false,lost:false,releasing:false};leases.set(tabId,lease);
+   const target=await targetFor(tabId);if(!target?.id)throw new Error('无法确认本轮网页的调试目标，尚未启用后台支持。');
+   const lease={tabId,targetId:target.id,requestId,provider,autoDiscardable:tab.autoDiscardable,attached:false,lost:false,releasing:false};leases.set(tabId,lease);
    try{
     await persist();await api.tabs.update(tabId,{autoDiscardable:false});
     await api.debugger.attach({tabId},'1.3');lease.attached=true;await persist();

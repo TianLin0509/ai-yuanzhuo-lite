@@ -30,7 +30,11 @@
     return output.join('\n').trim();
   }
   function hash(text){let h=2166136261;for(let i=0;i<text.length;i++)h=Math.imul(h^text.charCodeAt(i),16777619);return (h>>>0).toString(36)+':'+text.length;}
-  function userText(node,config){if(!node)return '';const copy=(config.userBody&&node.querySelector(config.userBody)||node).cloneNode(true);copy.querySelectorAll('button,[role="button"],svg,.icon-button,.kimi-tooltip').forEach(el=>el.remove());return normalized(value(copy));}
+  function userText(node,config){if(!node)return '';const copy=(config.userBody&&node.querySelector(config.userBody)||node).cloneNode(true);copy.querySelectorAll('button,[role="button"],svg,.icon-button,.kimi-tooltip').forEach(el=>el.remove());
+    // Rendered Markdown lists keep their numbers in CSS counters, not textContent.
+    // Reconstruct those numbers in the clone; never drop digits from the prompt.
+    for(const list of copy.querySelectorAll('ol')){const items=[...list.children].filter(n=>n.tagName==='LI'),step=list.reversed?-1:1;let number=list.hasAttribute('start')?list.start:list.reversed?items.length:1;for(const item of items){if(item.hasAttribute('value'))number=item.value;item.prepend(document.createTextNode(number+'. '));number+=step;}}
+    return normalized(value(copy));}
   const promptLetters=text=>String(text).replace(/[\s\p{P}\p{Z}]/gu,'');
   function ownsUser(job,nodes){
     const last=nodes.at(-1);if(!last)return false;
@@ -72,10 +76,11 @@
   function schedule(job,ms=3000){if(job.cancelled||job.timer)return;diagnostics.timers++;job.timer=setTimeout(()=>{diagnostics.timers--;job.timer=null;inspect(job);schedule(job);},ms);}
   function changed(job){job.dirty=true;if(job.cancelled||job.flushTimer)return;diagnostics.timers++;job.flushTimer=setTimeout(()=>{diagnostics.timers--;job.flushTimer=null;inspect(job);},900);}
   function completionMarker(config,element){let root=element;for(let depth=0;root&&depth<4;depth++,root=root.parentElement){if(depth&&config.answer.some(selector=>root.querySelectorAll(selector).length>1))break;if(find(config.complete,root))return true;}return false;}
+  const followsUser=(element,user)=>!!element?.isConnected&&!!user?.isConnected&&!user.contains(element)&&!!(user.compareDocumentPosition(element)&Node.DOCUMENT_POSITION_FOLLOWING);
   function inspect(job,force=false){
     if(job.cancelled||!job.dispatched)return;
     if(job.config.blocked&&find(job.config.blocked)){emit(job,'attention',job.lastText,'网页要求人机验证。请在原网页完成后重新提取；不会自动重发。');retire(job);return;}
-    const hadAnchor=!!job.anchor,owns=ownsUser(job,users(job.config));
+    const userNodes=users(job.config),hadAnchor=!!job.anchor,owns=ownsUser(job,userNodes);
     // Revalidate on every read, including after a SPA changes URL before replacing DOM.
     if(hadAnchor&&!owns){emit(job,'attention',job.lastText,'网页中的提问已变化，已停止读取，防止混入其他回答。');retire(job);return;}
     if(!job.sending&&cleanUrl()!==job.expectedUrl){
@@ -87,19 +92,27 @@
     if(!owns){if(Date.now()-job.startedAt>45000){emit(job,'attention',job.lastText,'无法确认网页中本轮提问的位置，请打开原网页核对；不会自动重发。');retire(job);}return;}
     const currentInput=find(job.config.input);
     if(!job.acknowledged&&job.dispatched&&currentInput&&!normalized(value(currentInput))&&(busy||users(job.config).length>job.baseline.userCount)){job.acknowledged=true;emit(job,'sent');}
+    // Virtualized nodes can disappear between reads. Keep the partial text, but
+    // never complete from a detached or relocated cached answer.
+    if(job.lastElement&&!followsUser(job.lastElement,userNodes.at(-1))){job.lastElement=null;job.dirty=true;}
     if(job.lastElement&&job.lastText&&!busy&&Date.now()-job.changedAt>45000&&!completionMarker(job.config,job.lastElement)&&!job.sawBusy){emit(job,'attention',answerMarkdown(job.lastElement,job.config),'已读到回答，但网页没有可靠的结束信号。请核对全文后确认完成，或重新提取。',{format:'markdown'});retire(job);return;}
     if(!job.dirty&&!force){if(job.lastElement&&job.lastText&&!busy&&Date.now()-job.changedAt>=2200&&(job.sawBusy||completionMarker(job.config,job.lastElement)))finish(job);return;}
     job.dirty=false;diagnostics.reads++;
     const nodes=answers(job.config),candidate=nodes.at(-1);if(!candidate)return;
+    // A virtual list may remount older answers and change counts/hashes. Only
+    // an answer after this request's user message can belong to this request.
+    if(!followsUser(candidate,userNodes.at(-1)))return;
     const raw=answerText(candidate,job.config),currentHash=hash(raw);
     const isNew=nodes.length>job.baseline.count||currentHash!==job.baseline.lastHash;
-    if(!isNew||!normalized(raw))return;
+    if(!isNew)return;
+    if(job.config.unsupported&&find(job.config.unsupported,candidate)){emit(job,'attention',answerMarkdown(candidate,job.config)||job.lastText,'网页生成了文档卡片，文档内容尚未提取完整。请打开原网页查看，或在新一轮要求 AI 直接在聊天正文输出。',{format:'markdown'});retire(job);return;}
+    if(!normalized(raw))return;
     job.lastElement=candidate;
     if(currentHash!==job.lastHash){job.lastHash=currentHash;job.lastText=raw.trim();job.changedAt=Date.now();job.acknowledged=true;emit(job,'streaming');}
     if(!busy&&Date.now()-job.changedAt>=2200&&(job.sawBusy||completionMarker(job.config,candidate)))finish(job);
     else if(!busy&&Date.now()-job.changedAt>45000){emit(job,'attention',answerMarkdown(candidate,job.config),'已读到回答，但网页没有可靠的结束信号。请核对全文后确认完成，或重新提取。',{format:'markdown'});retire(job);}
   }
-  function finish(job){const text=answerMarkdown(job.lastElement,job.config);if(!text){emit(job,'attention',job.lastText,'网页答案为空，未标记完成。');}else emit(job,'done',text,'',{format:'markdown'});retire(job);}
+  function finish(job){if(!followsUser(job.lastElement,users(job.config).at(-1))){job.lastElement=null;job.dirty=true;return;}const text=answerMarkdown(job.lastElement,job.config);if(!text){emit(job,'attention',job.lastText,'网页答案为空，未标记完成。');}else emit(job,'done',text,'',{format:'markdown'});retire(job);}
   function watch(job){
     for(const other of jobs.values())if(other!==job&&!other.cancelled)retire(other);
     const root=find(job.config.root)||document.body;
@@ -153,7 +166,10 @@
     if(jobs.has(message.requestId))return {status:jobs.get(message.requestId).status,duplicate:true};
     const config=globalThis.YuanzhuoAdapters[message.provider];
     if(!config||!message.baseline)throw new Error('缺少本轮回答锚点，无法安全重新提取。');
-    if(message.url&&cleanUrl()!==message.url&&config.conversation.test(new URL(message.url).pathname))throw new Error('原网页已切换对话，请先回到本轮原网页。');
+    if(message.url&&cleanUrl()!==message.url){
+      const before=new URL(message.url),finalizing=message.provider==='doubao'&&/^block_[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(message.anchor?.key||'')&&message.anchor?.textHash&&before.origin===location.origin&&/^\/chat\/local[_-][^/]+\/?$/.test(before.pathname)&&/^\/chat\/\d+\/?$/.test(location.pathname);
+      if(config.conversation.test(before.pathname)&&!finalizing)throw new Error('原网页已切换对话，请先回到本轮原网页。');
+    }
     const job={...message,config,sequence:0,startedAt:Date.now(),changedAt:Date.now(),lastText:'',lastHash:'',expectedUrl:cleanUrl(),boundConversation:config.conversation.test(location.pathname),cancelled:false,dispatched:true,sawBusy:false,acknowledged:true,sending:false,status:'sent'};
     if(!ownsUser(job,users(config)))throw new Error('网页最新提问不属于本轮，无法安全重新提取。请保留原回答并在圆桌中新开一轮。');
     jobs.set(job.requestId,job);watch(job);inspect(job,true);return {status:job.status};

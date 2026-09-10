@@ -5,7 +5,8 @@
 - core.test.mjs：原文完整性、讨论材料、上下文超限拒绝、重复发起保护、迟到/乱序/跨标签页事件、合法平台、完整导出。
 - extension.mjs：真正加载 MV3 扩展，用受控三站 HTML 验证 UI → service worker → 内容脚本 → 网页 DOM → 存储 → UI 的链路；检查资源释放和未选中网页零注入。
 - fixture.mjs 是网页数据提供器，不是独立测试入口。
-- background-support.test.mjs：Chrome 调试支持的请求归属、取消、失败传播、完整恢复日志与回收设置还原；background.test.mjs 还覆盖取消/停止与异步注入的发送边界竞态。
+- background-support.test.mjs：Chrome 调试支持的请求归属、取消、失败传播、完整恢复日志与回收设置还原；清空 session 后的 local 日志恢复、target 身份变化、查询/落盘失败必须覆盖。background.test.mjs 还覆盖取消/停止与异步注入的发送边界竞态，以及旧任务恢复不得向复用 tabId 的新页面发送停止消息。
+- captcha-recovery.test.mjs：豆包验证码后临时 URL 转正式会话的受限重读、Markdown 有序列表数字身份、DeepSeek 虚拟列表消息键、文档卡片不冒充完整答案、旧回答重新挂回与部分回答节点回收不得误判完成。
 - native-background.mjs：原生 Chromium + noDefaults 附着，未启用时三家隐藏且受控 rAF 停止；由扩展自身启用后后台三家完整生成；结束恢复隐藏并释放调试连接，非成员对照页不受影响。
 
 Playwright 在 Windows 优先使用已有 `C:\VibeData\BrowserCache\playwright`；其他环境按 Playwright 默认浏览器目录，需要先 `npx playwright install chromium`。

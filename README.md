@@ -4,7 +4,7 @@
 
 首批成员：**DeepSeek / Kimi / 豆包**。本版本为 0.1.0 初步实现；2026-09-09 已使用登录后的三家真实网页完成同题、追问、讨论、重新提取和停止测试，并由豆包完成队长总结。详见 `docs/20260909-initial-verification-codex.md`。
 
-上述为首版功能验证，不等于新增后台机制已完成三站验收。本次原生浏览器首轮 DeepSeek / Kimi 完成，豆包遇到验证码；实际进度与限制见 `docs/20260909-background-verification-codex.md` 和本地 artifacts 的实测记录。
+新增后台机制已在登录后的三家原生浏览器完成正文长回答、多行代码、迭代及最小化闲置 330 秒后的讨论验证。豆包验证码恢复也已通过；文档卡片只能明确提示内容未提取完整，不作为正文完成。过程与边界见 `docs/20260909-deep-stress-verification-codex.md` 和本地 artifacts 实测记录。
 
 ## 使用
 
@@ -23,6 +23,7 @@
 - 会话持久化、轮次回看、完整 Markdown 导出、主动删除历史。
 - 网页返回不确定时不会自动重复发送；长时间无结束证据时提示用户核对。
 - 重新提取核对本轮提问身份；切换到其他网页对话时停止采集。历史轮次只能回看，不会覆盖成最新回答。
+- 虚拟列表按本轮提问定位回答，回收掉的部分回答不会被当作完整答案；豆包文档卡片明确提示内容未提取完整，可在新一轮要求直接回复聊天正文。
 - 只向被选中的网页按需注入，完成后释放 Observer 和读取定时器。
 - 后台提取复用旧 AI-Arena 的 Chrome 调试唤醒与焦点模拟。每轮开始时启用，结束/停止时释放，恢复网页原有回收设置；不自动切换到前台。
 
@@ -41,7 +42,7 @@ npm run browser:live
 
 `check` 覆盖构建、全部源码语法、`tests/*.test.mjs`、真实 MV3 扩展加载的 `tests/extension.mjs` 和无默认焦点模拟的 `tests/native-background.mjs`。浏览器测试使用受控网页验证消息链路、完整性、恢复与资源释放，不能宣称真实站点已通过。
 
-离线检查涵盖 29 项回归、10 组扩展链路及原生后台对照。长时后台受控检查可运行 `node tests/native-background.mjs --long-hidden`。真实网站测试另有记录；网页 UI 后续更新仍可能需要适配，公司网络、长会话的 CPU / 内存改善尚未量化。
+离线检查涵盖 40 项回归、10 组扩展链路及原生后台对照。长时后台受控检查可运行 `node tests/native-background.mjs --long-hidden`。真实网站测试另有记录；网页 UI 后续更新仍可能需要适配，公司网络、长会话的 CPU / 内存改善尚未量化。
 
 `browser:live` 直接启动独立、可见的 Chromium，Playwright 仅以 `noDefaults: true` 附着，不为网页开启测试用焦点模拟或禁用后台节流。登录由用户在浏览器中完成；脚本不读取、导出或提交 Cookie。新 Profile 存放在 `C:\VibeData\BrowserProfiles\AI-Yuanzhuo-Lite\live-native`，此前的 `live` 原样保留。自动化调试端口仅绑定 127.0.0.1，端口和 PID 写到忽略的 artifacts；正式扩展使用 chrome.debugger，不要求以调试端口启动日常 Chrome。
 

@@ -29,16 +29,20 @@ function alarm(){const task=alarmQueue.then(async()=>{
 async function supportLost(event){
   for(const meta of index.sessions){const s=await loadSession(meta.id);for(const r of s.rounds){const job=r.jobs.find(j=>j.requestId===event.requestId&&j.tabId===event.tabId);if(!job||!ACTIVE.has(job.status))continue;
     await updateJob({sessionId:s.id,roundId:r.id,jobId:job.id,requestId:job.requestId},j=>{if(ACTIVE.has(j.status)){j.status=j.phase==='attempted'?'attention':'error';j.error=event.reason+'。请打开原网页核对后重新提取；不会自动重发。';j.updatedAt=Date.now();}});
-    try{await pageMessage(event.tabId,{type:'YZ_STOP',requestId:event.requestId,stopGeneration:false});}catch(error){console.info('[AI圆桌lite] 已中断的网页读取无法确认停止：',error.message);}
+    try{const target=(await chrome.debugger.getTargets()).find(t=>t.tabId===event.tabId&&t.type==='page');if(event.targetId&&target?.id===event.targetId)await pageMessage(event.tabId,{type:'YZ_STOP',requestId:event.requestId,stopGeneration:false});}catch(error){console.info('[AI圆桌lite] 已中断的网页读取无法确认停止：',error.message);}
   }}
 }
 async function releaseSupport(ref){const job=await readJob(ref);if(job?.tabId)try{await support.release(job.tabId,ref.requestId||job.requestId);}catch(error){supportWarning=error.message;await updateJob(ref,j=>{j.error=[j.error,error.message].filter(Boolean).join('；');});}}
 async function waitForTab(tabId){const start=Date.now();while(Date.now()-start<20000){const tab=await chrome.tabs.get(tabId);if(tab.status==='complete')return tab;await new Promise(resolve=>setTimeout(resolve,300));}throw new Error('网页仍在加载。请打开网页检查网络或登录，再重试。');}
-async function connection(sessionId,provider,{focus=false,verifyConversation=false}={}){
+function provisionalRecovery(provider,binding,url,job){
+  if(provider!=='doubao'||job?.phase!=='attempted'||!/^block_[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(job.anchor?.key||'')||!job.anchor?.textHash||cleanUrl(job.url)!==cleanUrl(binding?.url))return false;
+  try{const before=new URL(binding.url),after=new URL(url);return before.origin===after.origin&&/^\/chat\/local[_-][^/]+\/?$/.test(before.pathname)&&/^\/chat\/\d+\/?$/.test(after.pathname);}catch{return false;}
+}
+async function connection(sessionId,provider,{focus=false,verifyConversation=false,rereadJob=null}={}){
   const session=await loadSession(sessionId);let tab=null,binding=session.bindings[provider];
   if(binding){try{tab=await chrome.tabs.get(binding.tabId);}catch(error){if(!/No tab|Invalid tab/i.test(error.message))throw error;}}
   if(tab&&providerFor(tab.url||tab.pendingUrl)!==provider)throw new Error(`${PROVIDERS[provider].name} 的标签页已离开对应网站，请重新连接。`);
-  if(tab&&binding?.url&&verifyConversation&&cleanUrl(tab.url||tab.pendingUrl)!==cleanUrl(binding.url))throw new Error('该标签页已切换到其他对话。请点“原网页”回到本轮绑定的对话，再重试。');
+  if(tab&&binding?.url&&verifyConversation&&cleanUrl(tab.url||tab.pendingUrl)!==cleanUrl(binding.url)&&!provisionalRecovery(provider,binding,tab.url||tab.pendingUrl,rereadJob))throw new Error('该标签页已切换到其他对话。请点“原网页”回到本轮绑定的对话，再重试。');
   if(!tab){tab=await chrome.tabs.create({url:binding?.url||PROVIDERS[provider].url,active:focus});await mutate(sessionId,s=>{s.bindings[provider]={tabId:tab.id,url:tab.url||tab.pendingUrl||PROVIDERS[provider].url};});}
   if(focus){await chrome.tabs.update(tab.id,{active:true});await chrome.windows.update(tab.windowId,{focused:true});}
   return tab;
@@ -120,7 +124,7 @@ async function command(message){
       }else if(message.operation==='reread'){
         if(ACTIVE.has(job.status))throw new Error('请先停止该成员的自动读取。');
         if(!job.baseline||job.phase!=='attempted')throw new Error('本轮没有已发送的回答锚点，请检查原网页后重试发送。');
-        const tab=await connection(ref.sessionId,job.provider,{verifyConversation:true});await waitForTab(tab.id);
+        const tab=await connection(ref.sessionId,job.provider,{verifyConversation:true,rereadJob:job});await waitForTab(tab.id);
         const requestId=id();const claimed=await updateJob(ref,(j,s)=>{if(s.rounds.at(-1)?.id!==ref.roundId||ACTIVE.has(j.status))throw new Error('该回答状态已变化，请刷新后重试。');j.requestId=requestId;j.sequence=0;j.status='sent';j.tabId=tab.id;j.error='';j.updatedAt=Date.now();return true;});if(!claimed)throw new Error('该回答状态已变化，请刷新后重试。');
         try{await support.acquire(tab.id,requestId,job.provider);if(!await supportedJob({...ref,requestId})){await support.release(tab.id,requestId);return state();}await inject(tab.id,job.provider);if(!await supportedJob({...ref,requestId})){await support.release(tab.id,requestId);return state();}await pageMessage(tab.id,{type:'YZ_REREAD',provider:job.provider,requestId,baseline:job.baseline,url:job.url,prompt:job.prompt,anchor:job.anchor});}catch(error){await updateJob({...ref,requestId},j=>{if(ACTIVE.has(j.status)){j.status='attention';j.error=error.message;}});await releaseSupport({...ref,requestId});}
       }else throw new Error('未知回答操作。');await alarm();return state();

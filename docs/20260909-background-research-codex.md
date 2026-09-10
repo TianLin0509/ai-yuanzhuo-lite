@@ -46,7 +46,7 @@ CDP Network.streamResourceContent 能把指定 requestId 后续响应字节放�
 2. 同一 tab 同时只允许一个请求持有支持。停止发生在 attach 期间时，attach 返回后重新检查请求状态并释放；旧轮次不能释放新请求的连接。
 3. 完成和停止都 detach，并恢复原回收设置；不设置 frozen，不改站点原生 API，不读取 Cookie，不拦截网站请求。
 4. 取消调试提示、关闭标签页或导航离开 AI 网站后，将受影响请求标记为需要处理，保留已收到正文；不自动重发或重新抢占调试连接。
-5. 用 session storage 记录资源归属。扩展异常重启后先清理上一运行期残留，再由用户重新提取。释放失败明确显示并通过现有恢复检查重试清理。
+5. 用 storage.local 记录资源归属、原 autoDiscardable 和页面 targetId。真实压力测试证明 storage.session 会在扩展重新加载时清空，不能承担这份恢复日志。启动、释放和中断通知均核对目标身份；tabId 被新页面复用时不操作新页。扩展重载后先恢复资源，再由用户重新提取；失败保留日志、明确显示并重试清理。此机制尚未发布到主干，不迁移旧候选的 session 日志；本轮已丢失的测试初值只按事前实测记录恢复，单列为测试清理。[Chrome storage 官方说明](https://developer.chrome.com/docs/extensions/reference/api/storage#property-session)
 6. 不迁入旧版 idle override。现有证据没有证明三家聊天前端需要模拟“用户活动/屏幕未锁定”；仅保留已证实相关的生命周期与焦点控制。
 
 ## 验收方法与边界
