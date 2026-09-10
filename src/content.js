@@ -118,18 +118,26 @@
     const root=find(job.config.root)||document.body;
     job.observer=new MutationObserver(()=>changed(job));job.observer.observe(root,{childList:true,subtree:true,characterData:true,attributes:true,attributeFilter:['disabled','aria-disabled','aria-label','class']});diagnostics.observers++;diagnostics.activeRequest=job.requestId;job.dirty=true;schedule(job,1000);
   }
-  async function fill(input,text){
+  function assertNoAttachments(config){if(config.draftAttachment&&find(config.draftAttachment))throw new Error('该网页有尚未发送的附件，请先处理原网页附件草稿；未发送本轮提问。');}
+  async function fill(input,text,config,isCancelled){
     input.focus();
     if(input.tagName==='TEXTAREA'){Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(input,text);input.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:text}));input.dispatchEvent(new Event('change',{bubbles:true}));}
     else{
       const selection=getSelection(),range=document.createRange();range.selectNodeContents(input);selection.removeAllRanges();selection.addRange(range);
       // Let Lexical / ProseMirror perform their own complete multiline paste.
       // Do not dispatch a second insertText event: Lexical may insert it twice.
-      const clipboardData=new DataTransfer();clipboardData.setData('text/plain',text);
-      if(input.matches('.ProseMirror'))clipboardData.setData('text/html',text.split('\n').map(line=>'<p style="white-space: pre-wrap">'+(line?line.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;'):'<br>')+'</p>').join(''));
-      const paste=new ClipboardEvent('paste',{clipboardData,bubbles:true,cancelable:true});input.dispatchEvent(paste);
-      await sleep(50);
-      if(!paste.defaultPrevented&&!value(input)){const inserted=document.execCommand('insertText',false,text);if(!inserted)throw new Error('该网页未接受文字输入，请打开原网页检查。');}
+      // Kimi Lexical converts one long clipboard payload into a TXT file.
+      // Insert bounded Unicode-safe chunks into ONE editor, verify the entire
+      // assembled prompt below, and click Send only once after all chunks finish.
+      const chunked=config.chunkedPaste&&input.matches(config.chunkedPaste),chars=chunked?Array.from(text):null,chunks=chunked?Array.from({length:Math.ceil(chars.length/1000)},(_,i)=>chars.slice(i*1000,(i+1)*1000).join('')):[text];
+      for(const chunk of chunks){
+        if(isCancelled())return;
+        const clipboardData=new DataTransfer();clipboardData.setData('text/plain',chunk);
+        if(input.matches('.ProseMirror'))clipboardData.setData('text/html',chunk.split('\n').map(line=>'<p style="white-space: pre-wrap">'+(line?line.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;'):'<br>')+'</p>').join(''));
+        const paste=new ClipboardEvent('paste',{clipboardData,bubbles:true,cancelable:true});input.dispatchEvent(paste);await sleep(50);if(isCancelled())return;
+        assertNoAttachments(config);
+        if(!paste.defaultPrevented&&!value(input)){const inserted=document.execCommand('insertText',false,chunk);if(!inserted)throw new Error('该网页未接受文字输入，请打开原网页检查。');}
+      }
     }
     await sleep(120);
     if(normalized(value(input))!==normalized(text))throw new Error('网页输入内容与原文不一致，已取消发送，请检查原网页。');
@@ -137,6 +145,7 @@
   function prepare(message){
     const config=globalThis.YuanzhuoAdapters[message.provider];if(!config)throw new Error('不支持该网页。');
     if(config.blocked&&find(config.blocked))throw new Error('网页要求人机验证，请先在原网页完成验证。');
+    assertNoAttachments(config);
     const input=find(config.input);if(!input)throw new Error('未找到可用输入框。请先打开网页完成登录或验证。');
     if(normalized(value(input)))throw new Error('该网页有尚未发送的内容。请先处理原网页草稿，再重试。');
     if(find(config.stop)||(config.busy&&find(config.busy)))throw new Error('该网页仍在生成其他回答，请等待结束。');
@@ -145,6 +154,7 @@
   async function send(message){
     if(jobs.has(message.requestId))return {status:jobs.get(message.requestId).status,duplicate:true};
     const config=globalThis.YuanzhuoAdapters[message.provider];if(!config)throw new Error('不支持该网页。');
+    assertNoAttachments(config);
     const input=find(config.input);if(!input)throw new Error('输入框已消失，请检查登录状态。');
     if(normalized(value(input)))throw new Error('发送前发现网页已有草稿，未覆盖或发送。');
     if(cleanUrl()!==message.baseline.url)throw new Error('发送前网页对话已变化，已取消发送。');
@@ -152,10 +162,15 @@
     job.navigationOpen=!job.boundConversation||/\/chat\/local[_-]/.test(location.pathname);
     jobs.set(job.requestId,job);
     try{
-      await fill(input,message.prompt);if(job.cancelled)return {status:'stopped'};
+      await fill(input,message.prompt,config,()=>job.cancelled);if(job.cancelled)return {status:'stopped'};assertNoAttachments(config);
       let button=find(config.send);
       for(let i=0;i<8&&!available(button);i++){await sleep(160);if(job.cancelled)return {status:'stopped'};button=find(config.send);}
       if(!available(button)){retire(job);throw new Error('未找到可用发送按钮，文字保留在网页中，未自动按回车或重试。');}
+      // Nothing may yield between final ownership/integrity checks and the click.
+      assertNoAttachments(config);
+      if(!input.isConnected||find(config.input)!==input)throw new Error('发送前网页输入框已变化，已取消发送，请检查原网页。');
+      if(cleanUrl()!==message.baseline.url)throw new Error('发送前网页对话已变化，已取消发送。');
+      if(normalized(value(input))!==normalized(message.prompt))throw new Error('发送前网页输入内容已变化，已取消发送，请检查原网页。');
       job.dispatched=true;watch(job);button.click();job.sending=false;
       emit(job,'unconfirmed','', '已点击发送，正在核对网页响应；不要重复发送。');
       await sleep(450);inspect(job,true);

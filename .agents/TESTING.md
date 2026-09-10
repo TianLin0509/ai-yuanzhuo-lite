@@ -7,6 +7,7 @@
 - fixture.mjs 是网页数据提供器，不是独立测试入口。
 - background-support.test.mjs：Chrome 调试支持的请求归属、取消、失败传播、完整恢复日志与回收设置还原；清空 session 后的 local 日志恢复、target 身份变化、查询/落盘失败必须覆盖。background.test.mjs 还覆盖取消/停止与异步注入的发送边界竞态，以及旧任务恢复不得向复用 tabId 的新页面发送停止消息。
 - captcha-recovery.test.mjs：豆包验证码后临时 URL 转正式会话的受限重读、Markdown 有序列表数字身份、DeepSeek 虚拟列表消息键、文档卡片不冒充完整答案、旧回答重新挂回与部分回答节点回收不得误判完成。
+- input-ownership.test.mjs：Kimi Lexical 长文本分段填入同一个编辑器，最终按完整原文仅发送一次；Unicode、空行与缩进保留；当前编辑区附件阻止发送，历史附件不误阻挡；组装期间停止后不得继续填入或发送；等待按钮期间出现附件、更换编辑器或修改正文时，点击前再次同步拦截。
 - native-background.mjs：原生 Chromium + noDefaults 附着，未启用时三家隐藏且受控 rAF 停止；由扩展自身启用后后台三家完整生成；结束恢复隐藏并释放调试连接，非成员对照页不受影响。
 
 Playwright 在 Windows 优先使用已有 `C:\VibeData\BrowserCache\playwright`；其他环境按 Playwright 默认浏览器目录，需要先 `npx playwright install chromium`。

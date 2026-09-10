@@ -42,7 +42,7 @@ npm run browser:live
 
 `check` 覆盖构建、全部源码语法、`tests/*.test.mjs`、真实 MV3 扩展加载的 `tests/extension.mjs` 和无默认焦点模拟的 `tests/native-background.mjs`。浏览器测试使用受控网页验证消息链路、完整性、恢复与资源释放，不能宣称真实站点已通过。
 
-离线检查涵盖 40 项回归、10 组扩展链路及原生后台对照。长时后台受控检查可运行 `node tests/native-background.mjs --long-hidden`。真实网站测试另有记录；网页 UI 后续更新仍可能需要适配，公司网络、长会话的 CPU / 内存改善尚未量化。
+离线检查涵盖 44 项回归、10 组扩展链路及原生后台对照。长时后台受控检查可运行 `node tests/native-background.mjs --long-hidden`。真实网站测试另有记录；网页 UI 后续更新仍可能需要适配，公司网络、长会话的 CPU / 内存改善尚未量化。
 
 `browser:live` 直接启动独立、可见的 Chromium，Playwright 仅以 `noDefaults: true` 附着，不为网页开启测试用焦点模拟或禁用后台节流。登录由用户在浏览器中完成；脚本不读取、导出或提交 Cookie。新 Profile 存放在 `C:\VibeData\BrowserProfiles\AI-Yuanzhuo-Lite\live-native`，此前的 `live` 原样保留。自动化调试端口仅绑定 127.0.0.1，端口和 PID 写到忽略的 artifacts；正式扩展使用 chrome.debugger，不要求以调试端口启动日常 Chrome。
 

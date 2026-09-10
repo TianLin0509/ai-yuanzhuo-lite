@@ -14,6 +14,8 @@ globalThis.YuanzhuoAdapters = {
   },
   kimi: {
     input:['.ProseMirror[contenteditable="true"]','[role="textbox"][contenteditable="true"]','[contenteditable="true"]','textarea'],
+    chunkedPaste:'.chat-input-editor[data-lexical-editor="true"]',
+    draftAttachment:['[data-testid="input-attachment-list"] .file-card-container','.chat-editor-attachment-area .file-card-container'],
     answer:['.segment-assistant','[class*="segment-assistant"]','[data-role="assistant"]','[class*="assistant-segment"]'],
     body:'.markdown-container:not(.toolcall-content-text) > .markdown',
     user:['.segment-user','[class*="segment-user"]','[data-role="user"]'],
