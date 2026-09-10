@@ -29,6 +29,7 @@ function hashes(directory,prefix=''){
   }return result;
 }
 const extensionHashes=hashes(extension);
+const testScriptHash=createHash('sha256').update(fs.readFileSync(import.meta.filename)).digest('hex');
 const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 // This is deliberately a visibility-dependent website fixture, not a patch to
 // browser APIs. Both the control and supported run use identical native rAF.
@@ -57,7 +58,7 @@ function backgroundFixture(provider){
 }
 const native=await launchNativeBrowser({profile,extension,headless:false});
 const {context}=native,failures=[];
-const evidence={createdAt:new Date().toISOString(),runId,result:'RUNNING',kind:'controlled website fixture, not real provider acceptance',baselineOnly,longHidden,minimized,environment:native.metadata,extensionHashes,checks:[],failures};
+const evidence={createdAt:new Date().toISOString(),runId,result:'RUNNING',kind:'controlled website fixture, not real provider acceptance',baselineOnly,longHidden,minimized,environment:native.metadata,extensionHashes,testScriptHash,checks:[],failures};
 const save=()=>fs.writeFileSync(evidencePath,JSON.stringify(evidence,null,2)+'\n','utf8');
 context.on('page',page=>page.on('pageerror',error=>failures.push(error.message)));
 save();
@@ -69,11 +70,13 @@ try{
   let worker=context.serviceWorkers().find(isArenaWorker);if(!worker)worker=await context.waitForEvent('serviceworker',{predicate:isArenaWorker});
   const extensionId=new URL(worker.url()).host,panel=context.pages()[0]||await context.newPage();
   evidence.extensionId=extensionId;
-  await panel.goto(`chrome-extension://${extensionId}/sidepanel.html`);await panel.waitForSelector('#empty:not([hidden])');
+  await panel.goto(`chrome-extension://${extensionId}/sidepanel.html`);
+  await panel.waitForFunction(()=>document.querySelector('#empty')?.hidden===false,undefined,{polling:100});
   const windowId=await panel.evaluate(async()=>(await chrome.tabs.getCurrent()).windowId);
   const windowState=()=>panel.evaluate(async id=>(await chrome.windows.get(id)).state,windowId);
   const command=(action,data={})=>panel.evaluate(async({action,data})=>{const response=await chrome.runtime.sendMessage({type:'YZ_COMMAND',action,...data});if(!response.ok)throw new Error(response.error);return response;},{action,data});
-  await panel.locator('#connect').click();await panel.waitForFunction(()=>document.querySelectorAll('.member-chip.connected').length===3);
+  await panel.locator('#connect').dispatchEvent('click');
+  await panel.waitForFunction(()=>document.querySelectorAll('.member-chip.connected').length===3,undefined,{polling:100});
   let state=await command('state');const bindings=state.session.bindings,tabs={};evidence.bindings=bindings;
   for(const provider of Object.keys(PROVIDERS)){
     for(let attempt=0;attempt<100;attempt++){tabs[provider]=context.pages().find(page=>providerFor(page.url())===provider);if(tabs[provider])break;await delay(50);}
@@ -83,11 +86,26 @@ try{
     await tabs[provider].goto(PROVIDERS[provider].url);
     await tabs[provider].waitForFunction(()=>!!globalThis.__backgroundFixture,undefined,{polling:100});
   }
-  const control=await context.newPage();await control.goto('https://chat.deepseek.com/native-control');
+  // Match the participants' native creation path. CDP Target.createTarget (used
+  // by context.newPage) can leave an inactive page visible even with noDefaults.
+  const controlTab=await panel.evaluate(()=>chrome.tabs.create({url:'https://chat.deepseek.com/native-control',active:false}));
+  let control;
+  for(let attempt=0;attempt<100;attempt++){control=context.pages().find(page=>page.url()==='https://chat.deepseek.com/native-control');if(control)break;await delay(50);}
+  assert(control,'Native control tab must exist');await control.goto('https://chat.deepseek.com/native-control');
   await control.waitForFunction(()=>!!globalThis.__backgroundFixture,undefined,{polling:100});
-  const [controlTab]=await panel.evaluate(()=>chrome.tabs.query({url:'https://chat.deepseek.com/native-control'}));
-  assert(controlTab,'Unselected control tab must exist');
-  const controlView=async()=>({active:(await panel.evaluate(tabId=>chrome.tabs.get(tabId),controlTab.id)).active,...await control.evaluate(()=>({visibility:document.visibilityState,frames:__backgroundFixture.frames,nativeApis:requestAnimationFrame===__native.raf&&setTimeout===__native.timer&&setInterval===__native.interval}))});
+  const controlSession=await context.newCDPSession(control);
+  try{const {targetInfo}=await controlSession.send('Target.getTargetInfo');evidence.controlTarget={tabId:controlTab.id,targetId:targetInfo.targetId,url:targetInfo.url,browserContextId:targetInfo.browserContextId};}finally{await controlSession.detach();}
+  const controlView=async()=>{
+    const tab=await panel.evaluate(tabId=>chrome.tabs.get(tabId),controlTab.id);
+    const owned=await panel.evaluate(async tabId=>{try{await chrome.debugger.sendCommand({tabId},'Page.getFrameTree');return true;}catch(error){if(/Debugger is not attached/i.test(error.message))return false;throw error;}},controlTab.id);
+    const injected=await panel.evaluate(async tabId=>(await chrome.scripting.executeScript({target:{tabId},func:()=>typeof globalThis.__yuanzhuoLite!=='undefined'}))[0].result,controlTab.id);
+    return {tabId:tab.id,windowId:tab.windowId,active:tab.active,owned,injected,...await control.evaluate(()=>({visibility:document.visibilityState,hidden:document.hidden,focus:document.hasFocus(),frames:__backgroundFixture.frames,nativeApis:requestAnimationFrame===__native.raf&&setTimeout===__native.timer&&setInterval===__native.interval}))};
+  };
+  const assertControl=(view,initialFrames)=>{
+    assert.equal(view.active,false,'Control tab must stay inactive');assert.equal(view.visibility,'hidden','Control tab must stay natively hidden');assert.equal(view.hidden,true);
+    assert.equal(view.frames,initialFrames,'Control native rAF must not advance');assert.equal(view.nativeApis,true);
+    assert.equal(view.owned,false,'Extension must not own control debugger');assert.equal(view.injected,false,'Product content script must not be injected into control');
+  };
   const views=async()=>{
     const result={};
     for(const [provider,page] of Object.entries(tabs)){
@@ -109,11 +127,13 @@ try{
   if(minimized)assert.equal(evidence.windowBaseline,'minimized');
   const baselineStart=await views();
   evidence.controlBaseline=await controlView();
+  assertControl(evidence.controlBaseline,evidence.controlBaseline.frames);
   assert(Object.values(baselineStart).every(view=>!view.active&&view.hidden&&view.visibility==='hidden'&&!view.discarded&&view.nativeApis),'Native background baseline must really be hidden');
   evidence.hiddenSince=new Date().toISOString();save();
   const hiddenDuration=longHidden?330000:1200;
   for(let remaining=hiddenDuration;remaining>0;){const wait=Math.min(remaining,30000);await delay(wait);remaining-=wait;if(longHidden)console.log(`Native hidden baseline: ${Math.round((hiddenDuration-remaining)/1000)}s / 330s`);}
   const baselineEnd=await views();
+  evidence.controlBaselineEnd=await controlView();assertControl(evidence.controlBaselineEnd,evidence.controlBaseline.frames);
   for(const provider of Object.keys(PROVIDERS)){
     assert.equal(baselineEnd[provider].frames,baselineStart[provider].frames,provider+' hidden rAF must not advance');
     assert.equal(baselineEnd[provider].active,false);assert.equal(baselineEnd[provider].visibility,'hidden');
@@ -136,7 +156,7 @@ try{
     evidence.duringDebugger=await debuggerOwned();
     evidence.windowDuring=await windowState();if(minimized)assert.equal(evidence.windowDuring,'minimized');
     evidence.controlDuring=await controlView();
-    assert.equal(evidence.controlDuring.active,false);assert.equal(evidence.controlDuring.visibility,'hidden');assert.equal(evidence.controlDuring.frames,evidence.controlBaseline.frames);assert.equal(evidence.controlDuring.nativeApis,true);
+    assertControl(evidence.controlDuring,evidence.controlBaseline.frames);
     assert(Object.values(evidence.during).every(view=>!view.active&&!view.hidden&&view.visibility==='visible'&&view.nativeApis),'Only extension support makes three inactive tabs visible; original JS APIs remain unchanged');
     assert(Object.values(evidence.duringDebugger).every(value=>value.attached),'Extension owns all three debug attachments while collecting');
     const deadline=Date.now()+45000;
@@ -149,11 +169,11 @@ try{
     assert(Object.values(evidence.after).every(view=>!view.active&&view.hidden&&view.visibility==='hidden'&&view.nativeApis),'Completed tabs return to native hidden state');
     assert(Object.values(evidence.afterDebugger).every(value=>!value.attached),'Completion releases all extension debug attachments');
     for(const provider of Object.keys(PROVIDERS))assert.equal(evidence.after[provider].autoDiscardable,baselineStart[provider].autoDiscardable,provider+' auto-discard policy restored');
-    evidence.controlAfter=await controlView();assert.equal(evidence.controlAfter.visibility,'hidden');assert.equal(evidence.controlAfter.frames,evidence.controlBaseline.frames);
+    evidence.controlAfter=await controlView();assertControl(evidence.controlAfter,evidence.controlBaseline.frames);
     evidence.windowAfter=await windowState();if(minimized)assert.equal(evidence.windowAfter,'minimized');
     evidence.jobs=jobs.map(job=>({provider:job.provider,status:job.status,text:job.text}));
     evidence.checks.push('Real MV3 dispatch enables extension-owned support on three inactive tabs, receives complete answers, then releases support and restores hidden state');
-    evidence.checks.push('Unselected control tab stays hidden with stalled native rAF throughout; completed participants regain original auto-discard policy');
+    evidence.checks.push('Native-created control stays hidden with stalled rAF, no extension debugger ownership and no product injection before, during and after collection; completed participants regain original auto-discard policy');
     if(minimized)evidence.checks.push('Only the test-owned browser window remains minimized before, during and after collection');
     console.log('PASS extension background collection: three inactive tabs done; native hidden state and detached ownership restored.');
   }

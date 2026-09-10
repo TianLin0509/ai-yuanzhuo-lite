@@ -4,6 +4,8 @@
 
 首批成员：**DeepSeek / Kimi / 豆包**。本版本为 0.1.0 初步实现；2026-09-09 已使用登录后的三家真实网页完成同题、追问、讨论、重新提取和停止测试，并由豆包完成队长总结。详见 `docs/20260909-initial-verification-codex.md`。
 
+上述为首版功能验证，不等于新增后台机制已完成三站验收。本次原生浏览器首轮 DeepSeek / Kimi 完成，豆包遇到验证码；实际进度与限制见 `docs/20260909-background-verification-codex.md` 和本地 artifacts 的实测记录。
+
 ## 使用
 
 1. `npm ci`，然后 `npm run build`。

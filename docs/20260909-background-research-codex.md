@@ -53,6 +53,8 @@ CDP Network.streamResourceContent 能把指定 requestId 后续响应字节放�
 
 必须使用原生启动的独立 Chromium，不添加禁用后台节流参数；Playwright 只通过 noDefaults:true 附着。先记录三家 tab active:false、页面 hidden；生成时由扩展自身 attach 使它们 visible，非参与者对照页仍 hidden；结束后检查恢复 hidden、attachment=0、原 autoDiscardable 恢复以及内容读取资源为零。测试工具不得另行发 focus emulation 命令来帮助通过。
 
+本次诊断还发现：即使 noDefaults 附着，Playwright 新建的对照页也可能在产品启动前保持 inactive / visible。故成员与对照统一由 Chrome 原生 tabs.create 创建，并对对照页的发送前基线、生成中及结束后状态分别断言，不能只验证成员隐藏而漏掉对照页。
+
 功能覆盖三家同题、追问、讨论的两家互评材料、完整正文/代码/结束标记、重读不重发与停止。额外验证长时后台等待后启动、窗口最小化、调试连接中断、关键命令失败、迟到请求与释放恢复。受控页面只能证明内部行为，真实账号结果单列。
 
 公司设备可能通过扩展 host 限制、截图/DLP策略等拒绝 debugger.attach；Chrome 官方列出了这些拒绝条件。[7] 实现应显示策略拒绝并停止，不提供绕过公司策略的操作。网络不可达、登录失效、验证码、网站修改、操作系统休眠仍属于外部条件；缺失任何一家时不得把整轮报成完整成功。

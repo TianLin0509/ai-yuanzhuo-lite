@@ -5,6 +5,23 @@ import {chromium} from './browser-config.mjs';
 
 const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 
+// Use Chrome's own developer-mode control, never profile preference edits or
+// command-line workarounds for a managed policy. Only close the page we create.
+export async function enableExtensionDeveloperMode(context){
+  const page=await context.newPage();
+  try{
+    await page.goto('chrome://extensions/');
+    const toggle=()=>document.querySelector('extensions-manager')?.shadowRoot?.querySelector('extensions-toolbar')?.shadowRoot?.querySelector('#devMode');
+    await page.waitForFunction(toggle,undefined,{polling:100});
+    const control=page.locator('#devMode');
+    const state=await control.evaluate(element=>({checked:element.checked,disabled:element.disabled||element.getAttribute('aria-disabled')==='true'}));
+    if(state.disabled)throw new Error('Chrome 开发者模式被管理策略或账号限制禁用，无法准备未打包扩展。');
+    if(!state.checked)await control.dispatchEvent('click');
+    await page.waitForFunction(()=>document.querySelector('extensions-manager')?.shadowRoot?.querySelector('extensions-toolbar')?.shadowRoot?.querySelector('#devMode')?.checked===true,undefined,{polling:100});
+    return {developerMode:true};
+  }finally{await page.close();}
+}
+
 // Native Chromium owns its lifecycle. Attaching with noDefaults avoids Playwright's
 // focus emulation and launch-time switches that disable normal background throttling.
 export async function launchNativeBrowser({profile,extension,headless=false,windowSize='1460,1040'}={}){

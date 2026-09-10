@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import {launchNativeBrowser} from './native-browser.mjs';
+import {launchNativeBrowser,enableExtensionDeveloperMode} from './native-browser.mjs';
 import {providerFor} from '../src/core.js';
 const root=path.resolve(import.meta.dirname,'..'),out=path.join(root,'artifacts');fs.mkdirSync(out,{recursive:true});
 const metadataPath=path.join(out,'20260909-lite-live-native-browser-codex.json');
@@ -14,6 +14,7 @@ if(fs.existsSync(metadataPath)){
 const {browser,context,metadata}=await launchNativeBrowser({profile,extension:path.join(root,'dist')});
 // Persist ownership immediately, even when a later navigation/login step fails.
 fs.writeFileSync(metadataPath,JSON.stringify({...metadata,login:'pending-user-login'},null,2)+'\n','utf8');
+Object.assign(metadata,await enableExtensionDeveloperMode(context));
 const isArenaWorker=worker=>worker.url().startsWith('chrome-extension:')&&worker.url().endsWith('/background.js');
 let worker=context.serviceWorkers().find(isArenaWorker);if(!worker)worker=await context.waitForEvent('serviceworker',{predicate:isArenaWorker});
 const extensionId=new URL(worker.url()).host;
