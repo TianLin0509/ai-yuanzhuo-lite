@@ -1,7 +1,8 @@
 import {PROVIDERS,ACTIVE,id,newSession,makeRound,busy,providerFor,cleanUrl,acceptEvent} from './core.js';
+import {createBackgroundSupport} from './background-support.js';
 
 const INDEX='arena.index',PREFIX='arena.session.',ALARM='arena-active-recovery';
-let index,queue=Promise.resolve();const sessions=new Map();
+let index,queue=Promise.resolve(),supportWarning='';const sessions=new Map();
 const run=fn=>{const operation=queue.then(fn);queue=operation.catch(()=>{});return operation;};
 async function loadSession(sessionId){if(!sessions.has(sessionId)){const data=await chrome.storage.local.get(PREFIX+sessionId);if(!data[PREFIX+sessionId])throw new Error('会话不存在，请刷新历史列表。');sessions.set(sessionId,data[PREFIX+sessionId]);}return sessions.get(sessionId);}
 async function save(session){session.updatedAt=Date.now();const next=structuredClone(index);const meta={id:session.id,title:session.title,updatedAt:session.updatedAt,rounds:session.rounds.length};next.sessions=next.sessions.filter(s=>s.id!==session.id);next.sessions.unshift(meta);await chrome.storage.local.set({[PREFIX+session.id]:session,[INDEX]:next});index=next;sessions.set(session.id,session);}
@@ -11,17 +12,37 @@ async function init(){
   if(!index){const session=newSession(Object.keys(PROVIDERS));index={schema:1,currentId:session.id,sessions:[]};await save(session);}
   await chrome.sidePanel.setPanelBehavior({openPanelOnActionClick:true});
 }
-const ready=init();
+const initialized=init();
+const support=createBackgroundSupport(chrome,{onLost:async event=>{await initialized;await supportLost(event);},onError:error=>{supportWarning=error.message;console.error('[AI圆桌lite] 后台支持异常',error);}});
+const ready=Promise.all([initialized,support.ready]);
 function findJob(session,roundId,jobId){return session.rounds.find(r=>r.id===roundId)?.jobs.find(j=>j.id===jobId);}
 async function updateJob(ref,fn){return mutate(ref.sessionId,s=>{const job=findJob(s,ref.roundId,ref.jobId);if(!job)throw new Error('本轮任务已不存在。');if(ref.requestId&&job.requestId!==ref.requestId)return null;return fn(job,s);});}
 async function readJob(ref){const job=findJob(await loadSession(ref.sessionId),ref.roundId,ref.jobId);return ref.requestId&&job?.requestId!==ref.requestId?null:job;}
-async function alarm(){let active=false;for(const meta of index.sessions){if(busy(await loadSession(meta.id))){active=true;break;}}if(active){if(!await chrome.alarms.get(ALARM))await chrome.alarms.create(ALARM,{periodInMinutes:0.5});}else await chrome.alarms.clear(ALARM);}
+async function supportedJob(ref){const job=await readJob(ref);if(!job||!ACTIVE.has(job.status))return null;if(!support.has(job.tabId,job.requestId))throw new Error('本轮后台支持已中断，尚未执行后续网页操作；请核对原网页。');return job;}
+async function requestActive(requestId){await queue;for(const meta of index.sessions){for(const round of (await loadSession(meta.id)).rounds)if(round.jobs.some(job=>(!requestId||job.requestId===requestId)&&ACTIVE.has(job.status)))return true;}return false;}
+let alarmQueue=Promise.resolve();
+function alarm(){const task=alarmQueue.then(async()=>{
+  try{await support.reconcile(requestActive);supportWarning='';}catch(error){supportWarning=error.message;console.error('[AI圆桌lite] 后台支持释放失败',error);}
+  if(await requestActive()||supportWarning){if(!await chrome.alarms.get(ALARM))await chrome.alarms.create(ALARM,{periodInMinutes:0.5});}else await chrome.alarms.clear(ALARM);
+ });alarmQueue=task.catch(()=>{});return task;
+}
+async function supportLost(event){
+  for(const meta of index.sessions){const s=await loadSession(meta.id);for(const r of s.rounds){const job=r.jobs.find(j=>j.requestId===event.requestId&&j.tabId===event.tabId);if(!job||!ACTIVE.has(job.status))continue;
+    await updateJob({sessionId:s.id,roundId:r.id,jobId:job.id,requestId:job.requestId},j=>{if(ACTIVE.has(j.status)){j.status=j.phase==='attempted'?'attention':'error';j.error=event.reason+'。请打开原网页核对后重新提取；不会自动重发。';j.updatedAt=Date.now();}});
+    try{const target=(await chrome.debugger.getTargets()).find(t=>t.tabId===event.tabId&&t.type==='page');if(event.targetId&&target?.id===event.targetId)await pageMessage(event.tabId,{type:'YZ_STOP',requestId:event.requestId,stopGeneration:false});}catch(error){console.info('[AI圆桌lite] 已中断的网页读取无法确认停止：',error.message);}
+  }}
+}
+async function releaseSupport(ref){const job=await readJob(ref);if(job?.tabId)try{await support.release(job.tabId,ref.requestId||job.requestId);}catch(error){supportWarning=error.message;await updateJob(ref,j=>{j.error=[j.error,error.message].filter(Boolean).join('；');});}}
 async function waitForTab(tabId){const start=Date.now();while(Date.now()-start<20000){const tab=await chrome.tabs.get(tabId);if(tab.status==='complete')return tab;await new Promise(resolve=>setTimeout(resolve,300));}throw new Error('网页仍在加载。请打开网页检查网络或登录，再重试。');}
-async function connection(sessionId,provider,{focus=false,verifyConversation=false}={}){
+function provisionalRecovery(provider,binding,url,job){
+  if(provider!=='doubao'||job?.phase!=='attempted'||!/^block_[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(job.anchor?.key||'')||!job.anchor?.textHash||cleanUrl(job.url)!==cleanUrl(binding?.url))return false;
+  try{const before=new URL(binding.url),after=new URL(url);return before.origin===after.origin&&/^\/chat\/local[_-][^/]+\/?$/.test(before.pathname)&&/^\/chat\/\d+\/?$/.test(after.pathname);}catch{return false;}
+}
+async function connection(sessionId,provider,{focus=false,verifyConversation=false,rereadJob=null}={}){
   const session=await loadSession(sessionId);let tab=null,binding=session.bindings[provider];
   if(binding){try{tab=await chrome.tabs.get(binding.tabId);}catch(error){if(!/No tab|Invalid tab/i.test(error.message))throw error;}}
   if(tab&&providerFor(tab.url||tab.pendingUrl)!==provider)throw new Error(`${PROVIDERS[provider].name} 的标签页已离开对应网站，请重新连接。`);
-  if(tab&&binding?.url&&verifyConversation&&cleanUrl(tab.url||tab.pendingUrl)!==cleanUrl(binding.url))throw new Error('该标签页已切换到其他对话。请点“原网页”回到本轮绑定的对话，再重试。');
+  if(tab&&binding?.url&&verifyConversation&&cleanUrl(tab.url||tab.pendingUrl)!==cleanUrl(binding.url)&&!provisionalRecovery(provider,binding,tab.url||tab.pendingUrl,rereadJob))throw new Error('该标签页已切换到其他对话。请点“原网页”回到本轮绑定的对话，再重试。');
   if(!tab){tab=await chrome.tabs.create({url:binding?.url||PROVIDERS[provider].url,active:focus});await mutate(sessionId,s=>{s.bindings[provider]={tabId:tab.id,url:tab.url||tab.pendingUrl||PROVIDERS[provider].url};});}
   if(focus){await chrome.tabs.update(tab.id,{active:true});await chrome.windows.update(tab.windowId,{focused:true});}
   return tab;
@@ -35,16 +56,19 @@ async function dispatch(ref){
     await updateJob(ref,j=>{if(ACTIVE.has(j.status))j.status='preparing';});
     const tab=await connection(ref.sessionId,job.provider,{verifyConversation:true});await waitForTab(tab.id);
     job=await readJob(ref);if(!job||!ACTIVE.has(job.status))return;
-    await updateJob(ref,j=>{j.tabId=tab.id;});await inject(tab.id,job.provider);
+    await updateJob(ref,j=>{j.tabId=tab.id;});await support.acquire(tab.id,job.requestId,job.provider);
+    job=await readJob(ref);if(!job||!ACTIVE.has(job.status)){await support.release(tab.id,ref.requestId);return;}
+    await inject(tab.id,job.provider);
+    job=await supportedJob(ref);if(!job){await support.release(tab.id,ref.requestId);return;}
     const preparation=await pageMessage(tab.id,{type:'YZ_PREPARE',provider:job.provider});
     if(cleanUrl(preparation.url)!==cleanUrl((await loadSession(ref.sessionId)).bindings[job.provider].url))throw new Error('准备发送时网页已切换对话，已取消发送。请点“原网页”核对。');
     await updateJob(ref,j=>{if(ACTIVE.has(j.status)){j.baseline=preparation.baseline;j.url=preparation.url;j.status='sending';j.phase='prepared';}});
-    job=await readJob(ref);if(!job||!ACTIVE.has(job.status))return;
+    job=await supportedJob(ref);if(!job){await support.release(tab.id,ref.requestId);return;}
     // Persist the uncertain boundary BEFORE the page can click. A restart never blindly repeats SEND.
     await updateJob(ref,j=>{if(ACTIVE.has(j.status))j.phase='attempted';});
-    job=await readJob(ref);if(!job||!ACTIVE.has(job.status))return;
+    job=await supportedJob(ref);if(!job){await support.release(tab.id,ref.requestId);return;}
     await pageMessage(tab.id,{type:'YZ_SEND',provider:job.provider,requestId:job.requestId,prompt:job.prompt,baseline:job.baseline});
-  }catch(error){await updateJob(ref,j=>{if(ACTIVE.has(j.status)){j.status=j.phase==='attempted'?'attention':'error';j.error=error.message;j.updatedAt=Date.now();}});}
+  }catch(error){await updateJob(ref,j=>{if(ACTIVE.has(j.status)){j.status=j.phase==='attempted'?'attention':'error';j.error=error.message;j.updatedAt=Date.now();}});await releaseSupport(ref);}
 }
 async function locateEvent(event,sender){
   if(!sender.tab||sender.frameId!==0)return false;
@@ -58,7 +82,7 @@ async function locateEvent(event,sender){
 }
 async function recover(){
   for(const meta of index.sessions){const session=await loadSession(meta.id);for(const round of session.rounds){for(const job of round.jobs){if(!ACTIVE.has(job.status)||Date.now()-job.updatedAt<45000)continue;
-    let active=false;try{if(job.tabId){const result=await pageMessage(job.tabId,{type:'YZ_STATUS',requestId:job.requestId});active=result.active;}}catch(error){console.info('[AI圆桌lite] 恢复检查：',error.message);}
+    let active=false;try{if(job.tabId&&support.has(job.tabId,job.requestId)){const result=await pageMessage(job.tabId,{type:'YZ_STATUS',requestId:job.requestId});active=result.active;}}catch(error){console.info('[AI圆桌lite] 恢复检查：',error.message);}
     if(!active)await updateJob({sessionId:session.id,roundId:round.id,jobId:job.id,requestId:job.requestId},j=>{if(ACTIVE.has(j.status)){j.status='attention';j.error='网页或扩展连接已重启。请打开原网页并重新提取；不会自动重发。';}});
   }}}await alarm();
 }
@@ -67,8 +91,9 @@ async function stopJob(ref,{skip=false}={}){
   ref={...ref,requestId:job.requestId};
   await updateJob(ref,j=>{j.status=skip?'skipped':'stopped';j.error='';j.updatedAt=Date.now();});
   if(job.tabId){try{const result=await pageMessage(job.tabId,{type:'YZ_STOP',requestId:job.requestId,stopGeneration:true});if(!result.pageStopped&&!skip)await updateJob(ref,j=>{j.error='已停止圆桌读取。原网页若仍在生成，可在原网页手动停止。';});}catch(error){await updateJob(ref,j=>{j.error='已停止圆桌读取；原网页未确认停止：'+error.message;});}}
+  await releaseSupport(ref);
 }
-async function state(){await queue;return {index:structuredClone(index),session:structuredClone(await loadSession(index.currentId)),providers:PROVIDERS};}
+async function state(){await queue;return {index:structuredClone(index),session:structuredClone(await loadSession(index.currentId)),providers:PROVIDERS,supportWarning};}
 async function command(message){
   switch(message.action){
     case 'state':return state();
@@ -99,9 +124,9 @@ async function command(message){
       }else if(message.operation==='reread'){
         if(ACTIVE.has(job.status))throw new Error('请先停止该成员的自动读取。');
         if(!job.baseline||job.phase!=='attempted')throw new Error('本轮没有已发送的回答锚点，请检查原网页后重试发送。');
-        const tab=await connection(ref.sessionId,job.provider,{verifyConversation:true});await waitForTab(tab.id);await inject(tab.id,job.provider);
+        const tab=await connection(ref.sessionId,job.provider,{verifyConversation:true,rereadJob:job});await waitForTab(tab.id);
         const requestId=id();const claimed=await updateJob(ref,(j,s)=>{if(s.rounds.at(-1)?.id!==ref.roundId||ACTIVE.has(j.status))throw new Error('该回答状态已变化，请刷新后重试。');j.requestId=requestId;j.sequence=0;j.status='sent';j.tabId=tab.id;j.error='';j.updatedAt=Date.now();return true;});if(!claimed)throw new Error('该回答状态已变化，请刷新后重试。');
-        try{await pageMessage(tab.id,{type:'YZ_REREAD',provider:job.provider,requestId,baseline:job.baseline,url:job.url,prompt:job.prompt,anchor:job.anchor});}catch(error){await updateJob({...ref,requestId},j=>{if(ACTIVE.has(j.status)){j.status='attention';j.error=error.message;}});}
+        try{await support.acquire(tab.id,requestId,job.provider);if(!await supportedJob({...ref,requestId})){await support.release(tab.id,requestId);return state();}await inject(tab.id,job.provider);if(!await supportedJob({...ref,requestId})){await support.release(tab.id,requestId);return state();}await pageMessage(tab.id,{type:'YZ_REREAD',provider:job.provider,requestId,baseline:job.baseline,url:job.url,prompt:job.prompt,anchor:job.anchor});}catch(error){await updateJob({...ref,requestId},j=>{if(ACTIVE.has(j.status)){j.status='attention';j.error=error.message;}});await releaseSupport({...ref,requestId});}
       }else throw new Error('未知回答操作。');await alarm();return state();
     }
     case 'delete':{const s=await loadSession(message.sessionId);if(busy(s))throw new Error('进行中的圆桌不能删除，请先停止。');if(!message.confirm)throw new Error('删除历史需要确认。');if(index.sessions.length===1)throw new Error('请先新建一场圆桌，再删除最后一条历史。');await run(async()=>{const next={...index,sessions:index.sessions.filter(m=>m.id!==s.id)};if(next.currentId===s.id)next.currentId=next.sessions[0].id;await chrome.storage.local.set({[INDEX]:next});index=next;await chrome.storage.local.remove(PREFIX+s.id);sessions.delete(s.id);});return state();}
@@ -117,3 +142,4 @@ chrome.runtime.onMessage.addListener((message,sender,respond)=>{
 chrome.alarms.onAlarm.addListener(event=>{if(event.name===ALARM)ready.then(recover).catch(error=>console.error('[AI圆桌lite] 恢复失败',error));});
 chrome.runtime.onInstalled.addListener(()=>{ready.catch(error=>console.error('[AI圆桌lite] 初始化失败',error));});
 chrome.runtime.onStartup.addListener(()=>{ready.then(recover).catch(error=>console.error('[AI圆桌lite] 启动恢复失败',error));});
+ready.then(alarm).catch(error=>console.error('[AI圆桌lite] 后台支持恢复失败',error));
