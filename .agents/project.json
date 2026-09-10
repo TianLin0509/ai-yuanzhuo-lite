@@ -15,6 +15,6 @@
     "Explicit releases only; no version bump, remote push, or publication on ordinary merges.",
     "Chrome MV3, Mock A sidepanel; initial providers DeepSeek, Kimi and Doubao.",
     "Fixture browsers are isolated. Real account login and live site tests are separate from offline merge gates.",
-    "No MAIN world patches, debugger, DNR, PPT, token dashboards, silent truncation, or automatic uncertain resend."
+    "User-approved debugger wake/focus support is limited to active request tabs and released afterwards. No MAIN world patches, DNR, PPT, token dashboards, silent truncation, or automatic uncertain resend."
   ]
 }

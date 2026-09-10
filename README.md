@@ -22,8 +22,11 @@
 - 网页返回不确定时不会自动重复发送；长时间无结束证据时提示用户核对。
 - 重新提取核对本轮提问身份；切换到其他网页对话时停止采集。历史轮次只能回看，不会覆盖成最新回答。
 - 只向被选中的网页按需注入，完成后释放 Observer 和读取定时器。
+- 后台提取复用旧 AI-Arena 的 Chrome 调试唤醒与焦点模拟。每轮开始时启用，结束/停止时释放，恢复网页原有回收设置；不自动切换到前台。
 
-PPT、token 统计、主题库、全站反节流、debugger、DNR、远程脚本、API 模型调用均未引入。
+回答期间 Chrome 会显示调试提示条，这是本轮后台支持；取消提示或打开开发者工具可能中断该连接，圆桌会提示核对原网页并重新提取。启用失败会阻止该成员发送，保留失败原因，不静默退回缺少后台支持的模式。公司浏览器策略可能不允许 debugger 权限。
+
+PPT、token 统计、主题库、全站调度补丁、DNR、远程脚本、API 模型调用均未引入。
 
 原文超过 120,000 字符时整次请求明确拒绝，不截取部分发送。最多保留 30 场本地圆桌，达到上限需用户导出并主动清理。容量不足也会明确报错，不自动删除答案。
 
@@ -34,15 +37,15 @@ npm run check
 npm run browser:live
 ```
 
-`check` 覆盖构建、全部源码语法、`tests/*.test.mjs` 和真实 MV3 扩展加载的 `tests/extension.mjs`。浏览器测试使用受控网页验证消息链路、完整性、恢复与资源释放，不能宣称真实站点已通过。
+`check` 覆盖构建、全部源码语法、`tests/*.test.mjs`、真实 MV3 扩展加载的 `tests/extension.mjs` 和无默认焦点模拟的 `tests/native-background.mjs`。浏览器测试使用受控网页验证消息链路、完整性、恢复与资源释放，不能宣称真实站点已通过。
 
-当前离线验证为 19 项回归与 10 组扩展链路检查，真实网站测试另有记录。网页 UI 后续更新仍可能需要适配；公司网络、长会话的 CPU / 内存改善尚未量化。
+离线检查涵盖 29 项回归、10 组扩展链路及原生后台对照。长时后台受控检查可运行 `node tests/native-background.mjs --long-hidden`。真实网站测试另有记录；网页 UI 后续更新仍可能需要适配，公司网络、长会话的 CPU / 内存改善尚未量化。
 
-`browser:live` 启动独立、可见的 Playwright Chromium，加载当前 `dist`，为三家打开网页。登录由用户在浏览器中完成；脚本不读取、导出或提交 Cookie。Profile 存放在 `C:\VibeData\BrowserProfiles\AI-Yuanzhuo-Lite\live`。服务绑定 127.0.0.1，端口和 PID 写到忽略的 artifacts 中。
+`browser:live` 直接启动独立、可见的 Chromium，Playwright 仅以 `noDefaults: true` 附着，不为网页开启测试用焦点模拟或禁用后台节流。登录由用户在浏览器中完成；脚本不读取、导出或提交 Cookie。新 Profile 存放在 `C:\VibeData\BrowserProfiles\AI-Yuanzhuo-Lite\live-native`，此前的 `live` 原样保留。自动化调试端口仅绑定 127.0.0.1，端口和 PID 写到忽略的 artifacts；正式扩展使用 chrome.debugger，不要求以调试端口启动日常 Chrome。
 
 浏览器会保留给人工登录和后续实测。重新构建后，先确认没有进行中的圆桌，再通过扩展管理页重新加载扩展并刷新已连接网页。
 
-后台可靠性尚未验收：现有 Playwright 测试浏览器中的非活动标签页仍报告 `document.visibilityState === 'visible'`，不能用它证明普通 Chrome 隐藏、冻结或丢弃标签页时仍可持续提取。真实网页的功能联调与后台生命周期验收必须分开。讨论 prompt 修复及验证更正见 `docs/20260909-peer-prompts-verification-codex.md`。
+首版 Playwright 浏览器的非活动标签页报告可见，曾造成后台验收偏差，见 `docs/20260909-peer-prompts-verification-codex.md`。现在必须以原生隐藏页面为起点，验证由扩展自身启用调试后恢复更新、结束后恢复隐藏；这不构成系统休眠、断网、验证码或公司策略限制下的成功承诺。方案调研见 `docs/20260909-background-research-codex.md`。
 
 ## 开发流程
 
@@ -57,7 +60,7 @@ npm run browser:live
 ## 实现参考
 
 - 经确认的 A 方案：原网页在中间，圆桌占右侧；展开卡片不切换主网页。
-- 旧版 AI-Arena：参考三站 DOM 适配经验，并沿用自由辩论的提示词与排除自身回答的转发规则；未迁入其调度补丁和完整模块。
+- 旧版 AI-Arena：参考三站 DOM 适配经验，沿用自由辩论的提示词、排除自身回答规则和 CDP 唤醒/焦点机制；未迁入其 MAIN world 调度补丁和完整模块。
 - [Chrome sidePanel](https://developer.chrome.com/docs/extensions/reference/api/sidePanel)
 - [MV3 service worker 生命周期](https://developer.chrome.com/docs/extensions/develop/concepts/service-workers/lifecycle)
 - [Playwright 扩展测试](https://playwright.dev/docs/chrome-extensions)

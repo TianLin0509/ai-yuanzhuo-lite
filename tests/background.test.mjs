@@ -3,26 +3,45 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 import * as core from '../src/core.js';
+import {createBackgroundSupport} from '../src/background-support.js';
 
-async function harness({oldRound=false,wrongTab=false,sendFails=false,onSend}={}){
+async function harness({oldRound=false,wrongTab=false,sendFails=false,onSend,focusFails=false,onInject,onAttach}={}){
  const s=core.newSession(['deepseek','kimi']);const first=core.makeRound('ask','first question',s);s.rounds.push(first);
  s.bindings={deepseek:{tabId:1,url:'https://chat.deepseek.com/a/chat/s/original'},kimi:{tabId:2,url:'https://www.kimi.com/chat/original'}};
  for(const j of first.jobs)Object.assign(j,{status:'done',text:'FIRST ANSWER',format:'markdown',phase:'attempted',tabId:s.bindings[j.provider].tabId,url:s.bindings[j.provider].url,baseline:{count:0,lastHash:'',userCount:0,url:s.bindings[j.provider].url}});
  if(oldRound){const next=core.makeRound('iterate','second question',s);s.rounds.push(next);for(const j of next.jobs)Object.assign(j,{status:'streaming',tabId:s.bindings[j.provider].tabId});}
  const data={'arena.index':{schema:1,currentId:s.id,sessions:[{id:s.id,title:s.title,updatedAt:0,rounds:s.rounds.length}]},['arena.session.'+s.id]:s},calls=[];
- const noop=()=>{};const chrome={
-  storage:{local:{get:async key=>structuredClone({[key]:data[key]}),set:async values=>Object.assign(data,structuredClone(values)),remove:async key=>{delete data[key];}}},
-  sidePanel:{setPanelBehavior:async()=>{}},scripting:{executeScript:async()=>[]},windows:{update:async()=>{}},
+ const noop=()=>{};let onDetach;const debuggerCalls=[];const chrome={
+  storage:{session:{get:async key=>structuredClone({[key]:data[key]}),set:async values=>Object.assign(data,structuredClone(values))},local:{get:async key=>structuredClone({[key]:data[key]}),set:async values=>Object.assign(data,structuredClone(values)),remove:async key=>{delete data[key];}}},
+  debugger:{attach:async({tabId})=>{debuggerCalls.push(['attach',tabId]);if(onAttach)await onAttach(tabId);},sendCommand:async({tabId},method)=>{debuggerCalls.push([method,tabId]);if(focusFails&&method==='Emulation.setFocusEmulationEnabled')throw Error('test focus failure');},detach:async({tabId})=>debuggerCalls.push(['detach',tabId]),onDetach:{addListener:fn=>{onDetach=fn;}}},
+  sidePanel:{setPanelBehavior:async()=>{}},scripting:{executeScript:async args=>{if(onInject)await onInject(args.target.tabId);return [];}},windows:{update:async()=>{}},
   tabs:{get:async id=>({id,status:'complete',url:id===1&&wrongTab?'https://chat.deepseek.com/a/chat/s/unrelated':Object.values(s.bindings).find(b=>b.tabId===id).url}),sendMessage:async(tabId,message)=>{calls.push({tabId,...message});if(message.type==='YZ_SEND'&&onSend)return onSend(message);if(message.type==='YZ_SEND'&&sendFails)throw Error('test send failure');if(message.type==='YZ_PREPARE'){const url=Object.values(s.bindings).find(b=>b.tabId===tabId).url;return {ok:true,baseline:{count:1,lastHash:'base',userCount:1,url},url};}return {ok:true};}},
   alarms:{get:async()=>null,create:async()=>{},clear:async()=>{},onAlarm:{addListener:noop}},
   runtime:{onMessage:{addListener:noop},onInstalled:{addListener:noop},onStartup:{addListener:noop}}
  };
- const box={...core,chrome,structuredClone,console,setTimeout,URL,Date};
- const source=fs.readFileSync(new URL('../src/background.js',import.meta.url),'utf8').replace(/^import[^\n]*\n/,'');
+ chrome.tabs.onUpdated={addListener:noop};chrome.tabs.update=async()=>{};
+ const box={...core,createBackgroundSupport,chrome,structuredClone,console,setTimeout,URL,Date};
+ const source=fs.readFileSync(new URL('../src/background.js',import.meta.url),'utf8').replace(/^import[^\n]*\n/gm,'');
  vm.runInNewContext(source+'\nglobalThis.audit={ready,command};',box);await box.audit.ready;
  const job=first.jobs[0],args={sessionId:s.id,roundId:first.id,jobId:job.id};
- return {command:box.audit.command,calls,args,s,job,data};
+ return {command:box.audit.command,calls,args,s,job,data,debuggerCalls,onDetach};
 }
+
+test('Required background support failure blocks the website SEND boundary',async()=>{
+ const h=await harness({focusFails:true});const result=await h.command({action:'start',sessionId:h.s.id,kind:'ask',text:'background required'});
+ assert(result.session.rounds.at(-1).jobs.every(j=>j.status==='error'&&j.phase!=='attempted'&&j.error.includes('test focus failure')));assert(!h.calls.some(c=>c.type==='YZ_SEND'));assert.equal(h.debuggerCalls.filter(c=>c[0]==='detach').length,2);
+});
+test('Stopping reread during injection cannot restart a released page watcher',async()=>{
+ let injected,unblock;const reached=new Promise(r=>{injected=r;}),hold=new Promise(r=>{unblock=r;});const h=await harness({onInject:async()=>{injected();await hold;}});
+ const reread=h.command({action:'job',...h.args,operation:'reread'});await reached;await h.command({action:'job',...h.args,operation:'stop'});unblock();await reread;
+ assert(!h.calls.some(c=>c.type==='YZ_REREAD'));assert.equal((await h.command({action:'state'})).session.rounds[0].jobs[0].status,'stopped');
+});
+test('Cancellation prevents SEND while another AI occupies the support queue',async()=>{
+ let injected,unblockInject,attaching,unblockAttach;const reached=new Promise(r=>{injected=r;}),hold=new Promise(r=>{unblockInject=r;}),second=new Promise(r=>{attaching=r;}),waitAttach=new Promise(r=>{unblockAttach=r;});
+ const h=await harness({onInject:async tab=>{if(tab===1){injected();await hold;}},onAttach:async tab=>{if(tab===2){attaching();await waitAttach;}}});
+ const started=h.command({action:'start',sessionId:h.s.id,kind:'ask',text:'cancel before send'});await Promise.all([reached,second]);h.onDetach({tabId:1},'canceled_by_user');unblockInject();await new Promise(r=>setTimeout(r,20));
+ const sent=h.calls.some(c=>c.tabId===1&&c.type==='YZ_SEND');unblockAttach();await started;assert.equal(sent,false);assert(!h.calls.some(c=>c.tabId===1&&c.type==='YZ_SEND'));
+});
 
 test('Historical operations cannot interrupt or overwrite the current round',async()=>{
  const h=await harness({oldRound:true});

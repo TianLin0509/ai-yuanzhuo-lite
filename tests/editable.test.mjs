@@ -29,6 +29,10 @@ test('Rich editors receive one complete paste with blank lines and code indentat
    assert.deepEqual(await page.evaluate(()=>sent),[prompt]);
    await page.evaluate(()=>request({type:'YZ_STOP',requestId:'editor-test'}));
    const diagnostic=await page.evaluate(()=>__yuanzhuoLite.diagnostics);assert.equal(diagnostic.observers,0);assert.equal(diagnostic.timers,0);
+   // STOP may arrive before SEND/REREAD when a debugger connection is cancelled.
+   await page.evaluate(()=>request({type:'YZ_STOP',requestId:'cancel-before-arrival'}));
+   for(const type of ['YZ_SEND','YZ_REREAD']){const cancelled=await page.evaluate(({type,baseline})=>request({type,provider:'kimi',requestId:'cancel-before-arrival',prompt:'must never arrive',baseline}),{type,baseline:prep.baseline});assert.equal(cancelled.ok,true);assert.equal(cancelled.status,'stopped');}
+   assert.deepEqual(await page.evaluate(()=>sent),[prompt]);assert.equal((await page.evaluate(()=>__yuanzhuoLite.diagnostics)).observers,0);
    await page.close();
   }
  }finally{await browser.close();}

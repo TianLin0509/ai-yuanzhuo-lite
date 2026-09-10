@@ -150,6 +150,7 @@
     }catch(error){retire(job);throw error;}
   }
   function reread(message){
+    if(jobs.has(message.requestId))return {status:jobs.get(message.requestId).status,duplicate:true};
     const config=globalThis.YuanzhuoAdapters[message.provider];
     if(!config||!message.baseline)throw new Error('缺少本轮回答锚点，无法安全重新提取。');
     if(message.url&&cleanUrl()!==message.url&&config.conversation.test(new URL(message.url).pathname))throw new Error('原网页已切换对话，请先回到本轮原网页。');
@@ -157,7 +158,7 @@
     if(!ownsUser(job,users(config)))throw new Error('网页最新提问不属于本轮，无法安全重新提取。请保留原回答并在圆桌中新开一轮。');
     jobs.set(job.requestId,job);watch(job);inspect(job,true);return {status:job.status};
   }
-  function stop(message){const job=jobs.get(message.requestId);if(job&&!job.cancelled){const button=message.stopGeneration?find(job.config.stop):null;job.status='stopped';retire(job);if(available(button)){button.click();return {stopped:true,pageStopped:true};}}return {stopped:true,pageStopped:false};}
+  function stop(message){const job=jobs.get(message.requestId);if(job&&!job.cancelled){const button=message.stopGeneration?find(job.config.stop):null;job.status='stopped';retire(job);if(available(button)){button.click();return {stopped:true,pageStopped:true};}}else if(!job){retire({requestId:message.requestId,status:'stopped',sequence:0});}return {stopped:true,pageStopped:false};}
   chrome.runtime.onMessage.addListener((message,sender,respond)=>{
     if(sender.id!==chrome.runtime.id||!message.type?.startsWith('YZ_'))return false;
     (async()=>{switch(message.type){case 'YZ_PING':return {ready:true,diagnostics};case 'YZ_PREPARE':return prepare(message);case 'YZ_SEND':return send(message);case 'YZ_REREAD':return reread(message);case 'YZ_STOP':return stop(message);case 'YZ_STATUS':{const job=jobs.get(message.requestId);return {known:!!job,status:job?.status,active:!!job&&!job.cancelled,sequence:job?.sequence||0};}default:throw new Error('未知网页操作。');}})().then(result=>respond({ok:true,...result}),error=>respond({ok:false,error:error.message}));return true;

@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "minimum_chrome_version": "120",
   "description": "一个问题，多种视角。DeepSeek、Kimi、豆包网页圆桌。",
-  "permissions": ["storage", "scripting", "sidePanel", "tabs", "alarms"],
+  "permissions": ["storage", "scripting", "sidePanel", "tabs", "alarms", "debugger"],
   "host_permissions": ["https://chat.deepseek.com/*", "https://www.kimi.com/*", "https://kimi.com/*", "https://kimi.moonshot.cn/*", "https://www.doubao.com/*"],
   "background": {"service_worker": "background.js", "type": "module"},
   "side_panel": {"default_path": "sidepanel.html"},
