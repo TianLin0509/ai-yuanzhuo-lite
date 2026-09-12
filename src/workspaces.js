@@ -26,7 +26,9 @@ export function createWorkspaces(chrome, {loadSession, createSession, mutate, ge
         const bindings=Object.values(old.bindings||{});
         let belongs=!Object.values(owners).includes(old.id);
         for(const binding of bindings){if(!Number.isInteger(binding.tabId)){belongs=false;continue;}try{const tab=await chrome.tabs.get(binding.tabId);if(tab.windowId!==windowId)belongs=false;}catch(e){if(!/No tab|Invalid tab/i.test(e.message))throw e;belongs=false;}}
-        sessionId=belongs?old.id:(await createSession(Object.keys(providers))).id;
+        // Capacity must never lock users out of the history needed to free space.
+        const closedHistory=getIndex().sessions?.find(s=>!Object.values(owners).includes(s.id));
+        sessionId=belongs?old.id:getIndex().sessions?.length>=30&&closedHistory?closedHistory.id:(await createSession(Object.keys(providers))).id;
       }
       const session=await loadSession(sessionId);
       const tabs=await chrome.tabs.query({windowId});

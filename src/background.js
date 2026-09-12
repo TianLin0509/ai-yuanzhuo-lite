@@ -13,8 +13,8 @@ async function init(){
   if(!index){const session=newSession(Object.keys(PROVIDERS));index={schema:1,currentId:session.id,sessions:[]};await save(session);}
   await chrome.sidePanel.setPanelBehavior({openPanelOnActionClick:true});
   const ephemeral=await chrome.storage.session.get(null),panelKeys=Object.keys(ephemeral).filter(k=>k.startsWith('arena.panel.'));
-  if(chrome.sidePanel.onClosed){for(const key of panelKeys)nativePanelState.set(Number(key.slice('arena.panel.'.length)),ephemeral[key]);}
-  else if(panelKeys.length)await chrome.storage.session.remove(panelKeys);
+  const livePanels=chrome.runtime.getContexts?new Set((await chrome.runtime.getContexts({contextTypes:['SIDE_PANEL']})).map(c=>c.documentId)):new Set();
+  for(const key of panelKeys){const windowId=Number(key.slice('arena.panel.'.length));if(chrome.sidePanel.onClosed&&livePanels.has(ephemeral['arena.panel-document.'+windowId]))nativePanelState.set(windowId,ephemeral[key]);else await chrome.storage.session.remove(key);}
 }
 const initialized=init();
 async function createSession(members){return run(async()=>{if(index.sessions.length>=30)throw new Error('已保存 30 场圆桌。请先导出并删除旧记录。');const session=newSession(members);await save(session);return session;});}
@@ -170,6 +170,7 @@ const panelPorts=new Map(),closedPanels=new Set();
 function publishPanel(windowId){return ready.then(()=>{const visible=nativePanelState.get(windowId)??(!closedPanels.has(windowId)&&[...(panelPorts.get(windowId)?.values()||[])].some(Boolean));return chrome.storage.session.set({['arena.panel.'+windowId]:visible});}).catch(e=>console.error('[AI圆桌lite] 侧栏状态保存失败',e));}
 chrome.runtime.onConnect?.addListener(port=>{
   const match=/^arena-panel:(\d+)$/.exec(port.name);if(!match||port.sender?.id!==chrome.runtime.id)return;const windowId=Number(match[1]),ports=panelPorts.get(windowId)||new Map();ports.set(port,false);panelPorts.set(windowId,ports);
+  if(port.sender.documentId)ready.then(()=>chrome.storage.session.set({['arena.panel-document.'+windowId]:port.sender.documentId})).catch(e=>console.error('[AI圆桌lite] 侧栏文档状态保存失败',e));
   port.onMessage.addListener(message=>{ports.set(port,message.visible===true);publishPanel(windowId);});
   port.onDisconnect.addListener(()=>{ports.delete(port);if(!ports.size)nativePanelState.delete(windowId);publishPanel(windowId);});
 });
