@@ -150,7 +150,11 @@ try{
     // make Playwright's rAF-based pointer stability checks pass. After five minutes
     // the unselected/occluded control window must not become a test focus override.
     await panel.locator('#send').dispatchEvent('click');
-    await panel.waitForFunction(()=>document.querySelectorAll('.answer').length===3,undefined,{polling:100});
+    // A hidden main reader deliberately skips Markdown/DOM rendering. Observe the
+    // persisted dispatch instead, without waking the window to help the test pass.
+    const dispatchDeadline=Date.now()+15000;let dispatched=false;
+    while(Date.now()<dispatchDeadline){state=await command('state');if(state.session.rounds.at(-1)?.jobs.length===3){dispatched=true;break;}await delay(100);}
+    assert(dispatched,'UI did not start a round: '+await panel.locator('#error-banner').textContent());
     const startDeadline=Date.now()+20000;
     while(Date.now()<startDeadline){const current=await views();if(Object.values(current).every(view=>view.generating)){evidence.during=current;break;}await delay(100);}
     assert(evidence.during,'All three fixture renderers must start under extension control');
