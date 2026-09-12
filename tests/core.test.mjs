@@ -26,8 +26,7 @@ test('两人讨论互换回答；连续讨论仅转发上一轮并推进旧版�
 });
 test('失败文本不参与讨论；队长总结仍接收全部有效回答（含自己的）',()=>{
  const s=seed(),r=makeRound('ask','问题',s);s.rounds.push(r);r.jobs[0].status=r.jobs[1].status='done';r.jobs[0].text='DS_COMPLETE';r.jobs[1].text='KIMI_COMPLETE';r.jobs[2].status='error';r.jobs[2].text='ERROR_MUST_NOT_BE_INCLUDED';
- const prompts=Object.fromEntries(composePrompts('discuss','原文要求',s).map(p=>[p.provider,p.prompt]));
- assert(!prompts.deepseek.includes('DS_COMPLETE'));assert(prompts.deepseek.includes('KIMI_COMPLETE'));assert(prompts.kimi.includes('DS_COMPLETE'));assert(!prompts.kimi.includes('KIMI_COMPLETE'));assert(prompts.doubao.includes('DS_COMPLETE')&&prompts.doubao.includes('KIMI_COMPLETE'));assert(Object.values(prompts).every(p=>!p.includes('ERROR_MUST_NOT_BE_INCLUDED')));
+ assert.throws(()=>composePrompts('discuss','原文要求',s),/不完整的回答/);
  const summary=composePrompts('summary','',s,{captain:'kimi',depth:'深入分析'});assert.equal(summary.length,1);assert.equal(summary[0].provider,'kimi');assert(summary[0].prompt.includes('深入分析'));assert(summary[0].prompt.includes('DS_COMPLETE'));assert(summary[0].prompt.includes('KIMI_COMPLETE'));assert(!summary[0].prompt.includes('ERROR_MUST_NOT_BE_INCLUDED'));
 });
 test('超限明确拒绝，不截断；未满足讨论条件不启动新请求',()=>{const s=seed();assert.throws(()=>composePrompts('ask','字'.repeat(MAX_PROMPT+1),s),/不会自动截断/);assert.throws(()=>composePrompts('discuss','',s),/至少需要两份/);assert.throws(()=>makeRound('ask',' ',s),/先输入/);});

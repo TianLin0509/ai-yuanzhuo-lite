@@ -28,6 +28,7 @@ export function composePrompts(kind,text,session,{captain,depth='简要结论'}=
   const latest=session.rounds.at(-1),answers=latest?.jobs.filter(j=>j.status==='done'&&j.text)||[];
   if(['ask','iterate'].includes(kind)&&!text.trim())throw new Error('请先输入问题或迭代要求。');
   if(kind==='discuss'&&answers.length<2)throw new Error('至少需要两份完整回答才能进行观点讨论。');
+  if(kind==='discuss'&&latest.jobs.some(j=>j.status!=='done'||!j.text))throw new Error('本轮仍有不完整的回答，请先重新提取或核对完成，再讨论。');
   if(kind==='summary'&&(!answers.length||!session.members.includes(captain)))throw new Error('请为已有回答选择一位队长。');
   const targets=kind==='summary'?[captain]:session.members;
   const prompts=targets.map(provider=>{
@@ -46,7 +47,7 @@ export function composePrompts(kind,text,session,{captain,depth='简要结论'}=
 export function makeRound(kind,text,session,options={}){
   if(busy(session))throw new Error('本轮仍在进行，请等待或停止后再继续。');
   const prompts=composePrompts(kind,text,session,options);
-  return {id:id(),kind,prompt:text||({discuss:'比较各家的最新观点',summary:'请队长总结本轮观点'}[kind]||''),createdAt:Date.now(),jobs:prompts.map(p=>({...p,id:id(),requestId:id(),status:'queued',phase:'not_sent',text:'',error:'',tabId:null,url:'',baseline:null,sequence:0,updatedAt:Date.now()}))};
+  return {id:id(),kind,sourceRoundId:session.rounds.at(-1)?.id||null,prompt:text||({discuss:'比较各家的最新观点',summary:'请队长总结本轮观点'}[kind]||''),createdAt:Date.now(),jobs:prompts.map(p=>({...p,id:id(),requestId:id(),status:'queued',phase:'not_sent',text:'',error:'',tabId:null,url:'',baseline:null,sequence:0,updatedAt:Date.now()}))};
 }
 export function acceptEvent(job,event,tabId){return !!job&&job.requestId===event.requestId&&job.tabId===tabId&&ACTIVE.has(job.status)&&Number.isInteger(event.sequence)&&event.sequence>job.sequence;}
 export function toMarkdown(session){return `# ${session.title}\n\n`+session.rounds.map((r,i)=>`## 第 ${i+1} 轮 · ${{ask:'独立回答',iterate:'独立迭代',discuss:'观点讨论',summary:'队长总结'}[r.kind]}\n\n${r.prompt}\n\n`+r.jobs.map(j=>`### ${PROVIDERS[j.provider].name} · ${LABELS[j.status]}\n\n${j.text||j.error||'尚无回答'}\n`).join('\n')).join('\n');}

@@ -70,11 +70,12 @@ try{
   let worker=context.serviceWorkers().find(isArenaWorker);if(!worker)worker=await context.waitForEvent('serviceworker',{predicate:isArenaWorker});
   const extensionId=new URL(worker.url()).host,panel=context.pages()[0]||await context.newPage();
   evidence.extensionId=extensionId;
-  await panel.goto(`chrome-extension://${extensionId}/sidepanel.html`);
+  await panel.goto(`chrome-extension://${extensionId}/main.html`);
   await panel.waitForFunction(()=>document.querySelector('#empty')?.hidden===false,undefined,{polling:100});
   const windowId=await panel.evaluate(async()=>(await chrome.tabs.getCurrent()).windowId);
   const windowState=()=>panel.evaluate(async id=>(await chrome.windows.get(id)).state,windowId);
   const command=(action,data={})=>panel.evaluate(async({action,data})=>{const response=await chrome.runtime.sendMessage({type:'YZ_COMMAND',action,...data});if(!response.ok)throw new Error(response.error);return response;},{action,data});
+  await command('preferences',{layout:'c'});
   await panel.locator('#connect').dispatchEvent('click');
   await panel.waitForFunction(()=>document.querySelectorAll('.member-chip.connected').length===3,undefined,{polling:100});
   let state=await command('state');const bindings=state.session.bindings,tabs={};evidence.bindings=bindings;

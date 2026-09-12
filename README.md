@@ -1,6 +1,6 @@
 # AI圆桌lite
 
-按确认的 **Mock A：轻巧侧栏** 实现的 Chrome MV3 扩展。原 AI 网页保持在主区域，右侧集中显示多家回答。
+Chrome MV3 网页圆桌扩展。**每个 Chrome 窗口一场圆桌：主 Tab 阅读，侧栏操作。** 三种视图共用同一份完整记录：A 单篇精读（默认）、B 双篇对读、C 回答索引；选择会自动保存。
 
 首批成员：**DeepSeek / Kimi / 豆包**。本版本为 0.1.0 初步实现；2026-09-09 已使用登录后的三家真实网页完成同题、追问、讨论、重新提取和停止测试，并由豆包完成队长总结。详见 `docs/20260909-initial-verification-codex.md`。
 
@@ -10,15 +10,17 @@
 
 1. `npm ci`，然后 `npm run build`。
 2. Chrome 扩展管理页开启开发者模式，加载解压的 `dist` 文件夹。
-3. 点击扩展图标打开侧栏，点击“打开并连接三家网页”，分别完成网页登录。
-4. 在圆桌中输入问题。每家一张状态卡片，点击展开全文。
+3. 点击扩展图标打开侧栏，点击“连接成员网页”，分别完成网页登录。
+4. 点击“打开圆桌记录”进入本窗口的主 Tab。在侧栏输入问题并选择同题提问、独立迭代、观点讨论或队长总结。
+5. 主界面顶部选择 A/B/C；左侧时光机显示原始问题和提问时间。回看历史不改变侧栏的最新发送基准，旧观点可通过“引用到下一轮”带入草稿。
+6. “新建圆桌窗口”打开独立窗口及三家成员 Tab。历史列表会回到已有窗口，或在新窗口恢复该圆桌；关闭窗口保留记录和草稿。
 
-一个圆桌为每家成员绑定独立标签页和对话 URL。新建圆桌保留历史；“原网页”返回该成员绑定的对话。
+一个圆桌为每家成员绑定本窗口内的独立标签页和对话 URL。“原网页”打开所选记录对应的 URL，不修改当前成员绑定。侧栏关闭后，主 Tab 下方提供同一份草稿的操作区；重新打开侧栏时自动隐藏，避免两处输入。跨窗口发送被拒绝，移走成员页时需移回或停止后重新连接。
 
 ## 首版功能
 
 - 同题并行回答、原文追问、独立迭代、观点讨论、指定队长总结。
-- 观点讨论沿用 AI-Arena 自由辩论的主提示和轮次引导，每家仅收到其他成员上轮的完整回答；队长总结收齐全部有效回答。
+- 观点讨论沿用 AI-Arena 自由辩论的主提示和轮次引导，每家仅收到其他成员上轮的完整回答。有不完整回答时须先提取或核对，避免漏转发；队长总结可收集已有完整回答，并标明来源轮次。
 - 逐成员状态、完整 Markdown / 代码、复制、重新提取、重试发送、跳过、停止。
 - 会话持久化、轮次回看、完整 Markdown 导出、主动删除历史。
 - 网页返回不确定时不会自动重复发送；长时间无结束证据时提示用户核对。
@@ -40,9 +42,9 @@ npm run check
 npm run browser:live
 ```
 
-`check` 覆盖构建、全部源码语法、`tests/*.test.mjs`、真实 MV3 扩展加载的 `tests/extension.mjs` 和无默认焦点模拟的 `tests/native-background.mjs`。浏览器测试使用受控网页验证消息链路、完整性、恢复与资源释放，不能宣称真实站点已通过。
+`check` 覆盖构建、全部源码语法、`tests/*.test.mjs`、`tests/extension.mjs`、`tests/desktop.mjs`、`tests/native-desktop.mjs` 以及无默认焦点模拟的 `tests/native-background.mjs`。浏览器测试使用受控网页验证消息链路、完整性、恢复与资源释放，不能宣称真实站点已通过。
 
-离线检查涵盖 44 项回归、10 组扩展链路及原生后台对照。长时后台受控检查可运行 `node tests/native-background.mjs --long-hidden`。真实网站测试另有记录；网页 UI 后续更新仍可能需要适配，公司网络、长会话的 CPU / 内存改善尚未量化。
+离线检查覆盖草稿重放、引用和发送清空的 revision 边界、窗口关闭中的发送、三种阅读视图及原生后台对照。长时后台受控检查可运行 `node tests/native-background.mjs --long-hidden`。此次桌面改版没有修改站点 DOM 适配器；真实网站测试仍以各自日期的记录为准，公司网络、长会话的 CPU / 内存改善尚未量化。
 
 `browser:live` 直接启动独立、可见的 Chromium，Playwright 仅以 `noDefaults: true` 附着，不为网页开启测试用焦点模拟或禁用后台节流。登录由用户在浏览器中完成；脚本不读取、导出或提交 Cookie。新 Profile 存放在 `C:\VibeData\BrowserProfiles\AI-Yuanzhuo-Lite\live-native`，此前的 `live` 原样保留。自动化调试端口仅绑定 127.0.0.1，端口和 PID 写到忽略的 artifacts；正式扩展使用 chrome.debugger，不要求以调试端口启动日常 Chrome。
 
@@ -62,7 +64,7 @@ npm run browser:live
 
 ## 实现参考
 
-- 经确认的 A 方案：原网页在中间，圆桌占右侧；展开卡片不切换主网页。
+- 2026-09-12 确认的三视图：主 Tab 显示收集记录，A 切换一家、B 并排两家、C 按需展开；原生 AI Tab 提供实时网站交互。时光机沿用旧版按提问锚定回答的思路。
 - 旧版 AI-Arena：参考三站 DOM 适配经验，沿用自由辩论的提示词、排除自身回答规则和 CDP 唤醒/焦点机制；未迁入其 MAIN world 调度补丁和完整模块。
 - [Chrome sidePanel](https://developer.chrome.com/docs/extensions/reference/api/sidePanel)
 - [MV3 service worker 生命周期](https://developer.chrome.com/docs/extensions/develop/concepts/service-workers/lifecycle)
