@@ -18,7 +18,24 @@ export function createWorkspaces(chrome, {loadSession, createSession, mutate, ge
         if(wanted&&owners[windowId]!==wanted)throw new Error('这个窗口已有另一场圆桌。请从历史列表在独立窗口打开。');
         return owners[windowId];
       }
+      const tabs=await chrome.tabs.query({windowId});
       let sessionId=wanted;
+      if(!sessionId){
+        // Browser/extension restarts clear session ownership. The restored main
+        // Tab is the durable window identity even when its sidebar starts first.
+        const restored=new Set();
+        for(const tab of tabs){
+          const url=tab.pendingUrl||tab.url||'';
+          if(url.split(/[?#]/,1)[0]!==chrome.runtime.getURL('main.html'))continue;
+          const id=new URL(url).searchParams.get('session');
+          if(id)restored.add(id);
+        }
+        if(restored.size>1)throw new Error('这个窗口有多场圆桌的主页面，请将它们移到各自独立窗口后重试。');
+        sessionId=[...restored][0];
+        // Missing/deleted saved sessions fail explicitly instead of silently
+        // replacing a restored roundtable with an empty one.
+        if(sessionId)await loadSession(sessionId);
+      }
       if(sessionId&&Object.values(owners).includes(sessionId))throw new Error('这场圆桌已在另一个窗口打开，请从历史列表切回对应窗口。');
       if(!sessionId){
         // On first upgrade adopt the old current session only in its original window.
@@ -31,7 +48,6 @@ export function createWorkspaces(chrome, {loadSession, createSession, mutate, ge
         sessionId=belongs?old.id:getIndex().sessions?.length>=30&&closedHistory?closedHistory.id:(await createSession(Object.keys(providers))).id;
       }
       const session=await loadSession(sessionId);
-      const tabs=await chrome.tabs.query({windowId});
       // Browser restarts can reuse numeric tab IDs. Match saved conversation URLs
       // inside this window, never trust a durable ID by itself.
       if(Object.keys(session.bindings||{}).length)await mutate(sessionId,s=>{

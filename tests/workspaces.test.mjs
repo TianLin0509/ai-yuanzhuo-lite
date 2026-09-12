@@ -14,3 +14,32 @@ test('Parallel reopening uses one window and preserves all saved answers',async(
 test('URL-only legacy bindings are never passed to tabs.get and stale IDs cannot be adopted',async()=>{const h=harness();h.first.bindings={deepseek:{url:PROVIDERS.deepseek.url}};const id=await h.api.claim(1);assert.notEqual(id,h.first.id);h.windows.set(2,{id:2});h.first.bindings={deepseek:{tabId:12,url:PROVIDERS.deepseek.url}};h.tabs.set(12,{id:12,windowId:1,url:PROVIDERS.deepseek.url});await h.api.claim(2,h.first.id);assert.equal(h.first.bindings.deepseek.tabId,undefined);});
 test('Window loss and moved member tabs fail closed without choosing another current window',async()=>{const h=harness();await h.api.claim(1);await assert.rejects(()=>h.api.validateTab(h.first.id,{windowId:2}),/移到其他窗口/);h.windows.delete(1);await assert.rejects(()=>h.api.requireWindow(h.first.id),/No window/);await h.api.forget(1);await assert.rejects(()=>h.api.validateTab(h.first.id,{windowId:2}),/已关闭或尚未绑定/);assert.equal(h.created,0);});
 test('At the 30-roundtable limit, closed history remains reachable after restart',async()=>{const h=harness();while(h.sessions.size<30){const s=newSession(Object.keys(PROVIDERS));h.sessions.set(s.id,s);}h.first.bindings={deepseek:{tabId:404,url:PROVIDERS.deepseek.url}};h.first.rounds=[{id:'original',prompt:'must remain accessible',jobs:[]}];assert.equal(await h.api.claim(1),h.first.id);assert.equal(h.sessions.size,30);assert.equal(h.first.rounds[0].prompt,'must remain accessible');assert.equal(h.first.bindings.deepseek.tabId,undefined);});
+
+test('Sidebar-first browser restart restores this window from its main Tab before global current session',async()=>{
+  for(const pending of [false,true]){
+    const h=harness(),second=newSession(Object.keys(PROVIDERS));h.sessions.set(second.id,second);h.windows.set(2,{id:2});
+    h.first.bindings={deepseek:{tabId:7,url:PROVIDERS.deepseek.url}};
+    h.tabs.set(7,{id:7,windowId:1,url:PROVIDERS.deepseek.url});
+    const main='chrome-extension://test/main.html?session='+second.id;
+    h.tabs.set(8,{id:8,windowId:2,...pending?{url:'chrome://newtab/',pendingUrl:main}:{url:main}});
+    second.bindings={kimi:{tabId:404,url:PROVIDERS.kimi.url}};second.rounds=[{id:'saved',prompt:'Preserved second roundtable',jobs:[]}];
+    h.tabs.set(9,{id:9,windowId:2,url:PROVIDERS.kimi.url});
+    assert.equal(await h.api.claim(2),second.id);
+    assert.equal(await h.api.claim(2,second.id),second.id);
+    assert.equal(h.sessions.size,2);assert.equal(second.bindings.kimi.tabId,9);assert.equal(second.rounds[0].prompt,'Preserved second roundtable');
+    assert.equal(await h.api.claim(1),h.first.id);assert.equal(await h.api.owner(second.id),2);
+  }
+});
+
+test('Restored main Tabs reject conflicting, deleted or already owned roundtables without creating replacements',async()=>{
+  const h=harness(),second=newSession(Object.keys(PROVIDERS));h.sessions.set(second.id,second);
+  h.tabs.set(7,{id:7,windowId:1,url:'chrome-extension://test/main.html?session='+h.first.id});
+  h.tabs.set(8,{id:8,windowId:1,url:'chrome-extension://test/main.html?session='+second.id});
+  await assert.rejects(()=>h.api.claim(1),/多场圆桌/);assert.equal(await h.api.ownerForWindow(1),null);
+  h.tabs.delete(8);h.tabs.get(7).url='chrome-extension://test/main.html?session=deleted';
+  await assert.rejects(()=>h.api.claim(1),/session absent/);assert.equal(await h.api.ownerForWindow(1),null);
+  h.tabs.get(7).url='chrome-extension://test/main.html?session='+h.first.id;
+  assert.equal(await h.api.claim(1),h.first.id);
+  h.windows.set(2,{id:2});h.tabs.set(8,{id:8,windowId:2,url:h.tabs.get(7).url});
+  await assert.rejects(()=>h.api.claim(2),/另一个窗口/);assert.equal(h.sessions.size,2);
+});
