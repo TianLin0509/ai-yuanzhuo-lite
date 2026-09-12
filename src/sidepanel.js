@@ -1,68 +1,127 @@
 import {PROVIDERS,ACTIVE,LABELS,busy,toMarkdown} from './core.js';
-const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
-const escape=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-let model,selectedRoundId,lastLatestId,refreshTimer,draftTimer,noticeTimer;
-const cards=new Map(),expanded=new Set();
-const currentRound=()=>model?.session.rounds.find(r=>r.id===selectedRoundId)||model?.session.rounds.at(-1);
+import {escapeHtml,fmtTime,fmtDateGroup,renderMarkdown,roundMatches} from './view.js';
+const $=s=>document.querySelector(s),$$=s=>[...document.querySelectorAll(s)],esc=escapeHtml;
+const main=document.body.dataset.surface==='main',kinds={ask:'同题提问',iterate:'独立迭代',discuss:'观点讨论',summary:'队长总结'};
+let windowId,model,reader={roundId:null,provider:'deepseek',pair:['deepseek','kimi'],expanded:[]},readerKey='',refreshTimer,noticeTimer,port;
+let refreshing=false,refreshAgain=false,draftQueue=Promise.resolve(),pendingDrafts=0,starting=false,viewSignature='';
+const textCache=new WeakMap();
+const confirmedDrafts=new Map(),editorId=crypto.randomUUID();
+const latest=()=>model?.session.rounds.at(-1),selected=()=>model?.session.rounds.find(r=>r.id===reader.roundId)||latest();
 function error(text){$('#error-banner').textContent=text;$('#error-banner').hidden=!text;}
-function notice(text){$('#notice').textContent=text;$('#notice').hidden=false;clearTimeout(noticeTimer);noticeTimer=setTimeout(()=>$('#notice').hidden=true,4500);}
-async function request(action,data={}){const response=await chrome.runtime.sendMessage({type:'YZ_COMMAND',action,...data});if(!response?.ok)throw new Error(response?.error||'扩展连接暂不可用，请重新打开侧栏。');return response;}
-async function act(action,data={}){error('');try{const next=await request(action,{sessionId:model?.session.id,...data});await adopt(next);return true;}catch(e){error(e.message);return false;}}
-async function adopt(next){const switched=model?.session.id!==next.session.id;model=next;const latest=model.session.rounds.at(-1)?.id;if(switched||latest!==lastLatestId){selectedRoundId=latest;lastLatestId=latest;cards.clear();expanded.clear();$('#answers').replaceChildren();}if(switched){const draft=await chrome.storage.session.get('draft.'+model.session.id);$('#prompt').value=draft['draft.'+model.session.id]||'';}render();}
-async function refresh(){try{await adopt(await request('state'));}catch(e){error(e.message);}}
-function actionButton(operation,label,emphasis=false){return `<button data-job-op="${operation}" ${emphasis?'class="emphasis"':''}>${label}</button>`;}
-function renderText(card,job){const target=card.querySelector('.text');if(!card.open)return;const signature=job.status+'|'+job.format+'|'+job.text;if(card._signature===signature)return;card._signature=signature;
-  if(!job.text){target.textContent=ACTIVE.has(job.status)?'等待这位成员的网页回答…':'';target.classList.add('plain');return;}
-  if(job.format!=='markdown'){target.textContent=job.text;target.classList.add('plain');return;}
-  target.classList.remove('plain');target.innerHTML=DOMPurify.sanitize(marked.parse(job.text,{gfm:true,breaks:true}),{ALLOWED_TAGS:['p','br','strong','em','h1','h2','h3','h4','h5','h6','ul','ol','li','pre','code','blockquote','a','table','thead','tbody','tr','td','th','hr','del'],ALLOWED_ATTR:['href','title','start']});
-  target.querySelectorAll('a').forEach(a=>{if(!/^https?:\/\//i.test(a.getAttribute('href')||''))a.removeAttribute('href');else{a.target='_blank';a.rel='noopener noreferrer';}});
+function notice(text){$('#notice').textContent=text;$('#notice').hidden=false;clearTimeout(noticeTimer);noticeTimer=setTimeout(()=>$('#notice').hidden=true,4000);}
+async function request(action,data={}){const r=await chrome.runtime.sendMessage({type:'YZ_COMMAND',windowId,sessionId:model?.session.id,action,...data});if(!r?.ok)throw new Error(r?.error||'扩展连接暂不可用，请重新打开界面。');const sessionId=r.sessionId||r.session?.id;if(sessionId&&r.draft){const known=confirmedDrafts.get(sessionId);if(known&&(known.revision||0)>(r.draft.revision||0))r.draft=known;else confirmedDrafts.set(sessionId,r.draft);}return r;}
+async function act(action,data={}){error('');try{const result=await request(action,data);await refresh();return result;}catch(e){error(e.message);return null;}}
+function scheduleRefresh(){clearTimeout(refreshTimer);refreshTimer=setTimeout(refresh,80);}
+async function refresh(){
+  if(refreshing){refreshAgain=true;return;}refreshing=true;
+  try{
+    const wanted=main&&!model?new URL(location.href).searchParams.get('session'):undefined;
+    const next=await request('state',wanted?{sessionId:wanted}:{}),changed=model?.session.id!==next.session.id;
+    const previousLatest=latest()?.id;
+    if(model&&!changed&&reader.roundId===previousLatest)reader.roundId=next.session.rounds.at(-1)?.id||null;
+    model=next;
+    if(changed){readerKey='arena.reader.'+model.session.id;const data=await chrome.storage.local.get(readerKey);reader={roundId:null,provider:'deepseek',pair:['deepseek','kimi'],expanded:[],...data[readerKey]};viewSignature='';if(main)history.replaceState(null,'','main.html?session='+encodeURIComponent(model.session.id));}
+    if(!model.session.rounds.some(r=>r.id===reader.roundId))reader.roundId=latest()?.id||null;
+    if(!pendingDrafts)await recoverDraft();const acknowledged=confirmedDrafts.get(model.session.id);if(acknowledged&&(acknowledged.revision||0)>(model.draft.revision||0))model.draft=acknowledged;
+    document.title=model.session.title+' · AI圆桌lite';renderController();if(main)renderMain();if(model.supportWarning)error(model.supportWarning);
+  }catch(e){error(e.message);}finally{refreshing=false;if(refreshAgain){refreshAgain=false;scheduleRefresh();}}
 }
-function renderAnswers(round){const ids=new Set(round.jobs.map(j=>j.id));for(const [id,card] of cards)if(!ids.has(id)){card.remove();cards.delete(id);}
-  const latest=round.id===model.session.rounds.at(-1)?.id;
-  for(const job of round.jobs){let card=cards.get(job.id);if(!card){card=document.createElement('details');card.className='answer';card.dataset.job=job.id;const p=PROVIDERS[job.provider];card.innerHTML=`<summary><div class="answer-head"><span class="avatar ${job.provider}">${p.short}</span><div><div class="member-name">${p.name}</div><div class="member-desc">网页会话</div></div><span class="state"></span><span class="chevron">⌄</span></div><div class="preview"></div></summary><div class="answer-body"><div class="answer-error" hidden></div><div class="text"></div><div class="actions"></div></div>`;cards.set(job.id,card);$('#answers').append(card);card.addEventListener('toggle',()=>{card.open?expanded.add(job.id):expanded.delete(job.id);const latest=currentRound()?.jobs.find(j=>j.id===job.id);if(latest)renderText(card,latest);});}
-    card._job=job;const state=card.querySelector('.state');state.textContent=(job.status==='done'?'✓ ':'')+LABELS[job.status];state.dataset.status=job.status;card.querySelector('.preview').textContent=(job.text||job.error||LABELS[job.status]).replace(/\s+/g,' ').slice(0,110);
-    const warning=card.querySelector('.answer-error');warning.hidden=!job.error;warning.textContent=job.error;
-    const statusKey=job.status+'|'+job.phase+'|'+!!job.text+'|'+latest;
-    if(card._statusKey!==statusKey){card._statusKey=statusKey;let actions=actionButton('open','原网页');if(job.text)actions+=actionButton('copy','复制全文');if(ACTIVE.has(job.status))actions+=actionButton('stop','停止');else if(latest){if(job.baseline&&job.phase==='attempted')actions+=actionButton('reread','重新提取');if(job.status!=='done'&&job.status!=='skipped')actions+=actionButton('retry','重试发送')+actionButton('skip','跳过');if(job.status==='attention'&&job.text)actions+=actionButton('confirm','确认已完成',true);}card.querySelector('.actions').innerHTML=actions;if(['error','attention'].includes(job.status))card.open=true;}
-    renderText(card,job);
+function persistReader(){chrome.storage.local.set({[readerKey]:reader}).catch(e=>error('阅读位置保存失败：'+e.message));}
+const draftBackupKey=()=> 'arena.pending-draft.'+model.session.id;
+async function recoverDraft(){
+  const backup=JSON.parse(localStorage.getItem(draftBackupKey())||'null');if(!backup)return;
+  if(backup.revision>(model.draft.lastInputRevision||0)){try{const result=await request('draft',backup);model.draft=result.draft;}catch(e){showDraftConflict(backup,e.message);return;}}
+  const current=JSON.parse(localStorage.getItem(draftBackupKey())||'null');if(current?.revision<=(model.draft.lastInputRevision||0))localStorage.removeItem(draftBackupKey());
+}
+function showDraftConflict(backup,message){error(message);let button=$('#recover-draft');if(!button){button=document.createElement('button');button.id='recover-draft';button.textContent='查看未保存的草稿';$('#error-banner').append(button);}button.onclick=()=>{dialog('核对保留的草稿',`<p>下方是尚未保存的输入。可以复制保留，或明确用它替换当前草稿。</p><textarea class="copy-area" readonly>${esc(backup.patch.text||'')}</textarea><button id="use-backup">用这份输入替换当前草稿</button>`);$('#use-backup').onclick=async()=>{const current=await request('state');localStorage.removeItem(draftBackupKey());model.draft=current.draft;close();await saveDraft(backup.patch);await refresh();};};}
+function saveDraft(patch){
+  // Synchronous write-ahead copy also survives closing a view while the worker wakes.
+  const key=draftBackupKey();let backup;
+  try{const prior=JSON.parse(localStorage.getItem(key)||'null');backup={patch:{...prior?.patch,...patch},revision:Math.max(Date.now()*1000,(prior?.revision||0)+1,(model.draft.revision||0)+1),baseRevision:prior?.baseRevision??model.draft.revision??0,writer:editorId};localStorage.setItem(key,JSON.stringify(backup));}
+  catch(e){error('草稿本地备份失败：'+e.message);backup={patch,revision:Date.now()*1000,baseRevision:model.draft.revision||0,writer:editorId};}
+  pendingDrafts++;const write=request('draft',backup);draftQueue=Promise.all([draftQueue.catch(()=>{}),write]);
+  write.then(result=>{pendingDrafts--;try{const pending=JSON.parse(localStorage.getItem(key)||'null');if(pending?.revision<=result.draft.lastInputRevision)localStorage.removeItem(key);}catch(e){error('草稿备份清理失败：'+e.message);}if(!pendingDrafts){model.draft=confirmedDrafts.get(model.session.id)||result.draft;renderController();}},e=>{pendingDrafts--;showDraftConflict(backup,'草稿保存失败，已保留本地备份：'+e.message);});draftQueue.catch(()=>{});return write;
+}
+function initController(){
+  $('#controller').innerHTML=`<div class="controller-title"><strong>继续这场圆桌</strong><button id="controller-main" ${main?'hidden':''}>查看记录 ↗</button></div><section class="base-round"><small id="base-title"></small><strong>下一轮基于</strong><span id="base-time"></span><small>回看历史不会自动更改这里。</small></section><div id="member-strip"></div><div class="connection-actions"><button id="connect">连接成员网页</button><button id="edit-members">选择成员</button></div><p id="connection-hint" class="hint">先在各家网页完成登录，再开始圆桌。</p><div class="compose-fields"><label for="kind">下一轮做什么</label><select id="kind">${Object.entries(kinds).map(([v,n])=>`<option value="${v}">${n}</option>`).join('')}</select><div id="summary-options" hidden><label for="captain">总结队长</label><select id="captain">${Object.entries(PROVIDERS).map(([id,p])=>`<option value="${id}">${p.name}</option>`).join('')}</select><label for="depth">总结深度</label><select id="depth"><option>简要结论</option><option>深入分析</option></select></div><label for="prompt" id="prompt-label">问题或补充要求</label><textarea id="prompt" placeholder="输入问题，保留你的完整原文…" rows="4"></textarea><small id="mode-hint" class="hint"></small><button id="preview" class="text-button">查看各家将收到的完整材料</button></div><div class="send-footer"><button id="send" class="primary">开始圆桌 →</button><small id="send-hint">原文发送 · Ctrl + Enter</small></div><details class="support-note"><summary>后台回答说明</summary><p>回答期间 Chrome 会显示调试提示，以保持后台成员网页更新。本轮结束自动释放；取消提示会中断后台支持，可核对网页后重新提取。</p></details>`;
+  $('#prompt').addEventListener('input',()=>saveDraft({text:$('#prompt').value}));
+  for(const id of ['kind','captain','depth'])$('#'+id).addEventListener('change',()=>{saveDraft({[id]:$('#'+id).value});renderMode();});
+  $('#send').addEventListener('click',send);
+  $('#prompt').addEventListener('keydown',e=>{if(e.ctrlKey&&e.key==='Enter'&&!e.isComposing){e.preventDefault();send();}});
+  $('#connect').addEventListener('click',()=>act('connect'));$('#edit-members').addEventListener('click',members);$('#preview').addEventListener('click',preview);$('#controller-main').addEventListener('click',()=>act('main'));
+  $('#member-strip').addEventListener('click',e=>{const b=e.target.closest('[data-provider]');if(!b)return;const p=b.dataset.provider,op=b.dataset.op;if(op==='open')act('open',{provider:p});else{const j=latest()?.jobs.find(j=>j.provider===p);if(j)jobAction(j,op);}});
+  if(!main)document.body.insertBefore($('.send-footer'),$('#dialog'));
+}
+function renderMode(){const kind=$('#kind').value;$('#summary-options').hidden=kind!=='summary';$('#mode-hint').textContent={ask:'同一条完整问题发给选中的成员。',iterate:'每家在自己的网页对话中独立改进。',discuss:'每家只收到其他成员上一轮的完整回答。',summary:'完整材料只交给指定队长。'}[kind];$('#prompt-label').textContent=['ask','iterate'].includes(kind)?'问题或迭代要求':'补充要求（可选）';if(!busy(model?.session))$('#send').textContent=starting?'正在发起…':(latest()?kinds[kind]:'开始圆桌')+' →';}
+function renderController(){
+  const s=model.session,r=latest(),active=busy(s),draft=model.draft;
+  if(!pendingDrafts){for(const key of ['text','kind','captain','depth']){const el=$('#'+(key==='text'?'prompt':key));const value=draft[key]??({text:'',kind:'ask',captain:s.members[0],depth:'简要结论'}[key]);if(el.value!==value)el.value=value;}}
+  $('#captain').querySelectorAll('option').forEach(o=>o.disabled=!s.members.includes(o.value));if(!s.members.includes($('#captain').value))$('#captain').value=s.members[0];
+  $('.base-round').dataset.baseId=r?.id||'';$('#base-title').textContent=s.title;$('#base-time').textContent=r?`${fmtTime(r.createdAt)} · 第 ${s.rounds.length} 轮`:'第一轮 · 尚未提问';
+  const signature=JSON.stringify([s.members,s.bindings,r?.jobs.map(j=>[j.provider,j.status,j.error,!!j.text,!!j.baseline,j.phase])]);
+  if($('#member-strip').dataset.signature!==signature){$('#member-strip').dataset.signature=signature;$('#member-strip').innerHTML=s.members.map(p=>{
+    const j=r?.jobs.find(j=>j.provider===p),bound=s.bindings[p]?.tabId,status=j?LABELS[j.status]:(bound?'网页已连接':'未连接');const action=(op,label)=>`<button data-provider="${p}" data-op="${op}">${label}</button>`;
+    let recovery='';if(j&&!ACTIVE.has(j.status)){if(j.baseline&&j.phase==='attempted')recovery+=action('reread','重新提取');if(!['done','skipped'].includes(j.status))recovery+=action('retry','重试发送')+action('skip','跳过');if(j.status==='attention'&&j.text)recovery+=action('confirm','确认已完成');}
+    return `<div class="member-row"><button class="member-chip ${bound?'connected':''}" data-provider="${p}" data-op="open"><span class="avatar ${p}">${PROVIDERS[p].short}</span>${PROVIDERS[p].name}</button><span class="state" data-status="${j?.status||'idle'}">${status}</span>${j?.error?`<p class="member-error">${esc(j.error)}</p>`:''}${recovery?`<div class="recovery">${recovery}</div>`:''}</div>`;
+  }).join('');}
+  $('#edit-members').disabled=active;$('#connect').disabled=active;$('#connection-hint').hidden=!!r;$('#send').disabled=starting&&!active;$('#kind').disabled=active;$('#preview').disabled=active;renderMode();if(active)$('#send').textContent='停止本轮 ■';
+}
+function renderMain(){
+  if(document.hidden)return;
+  const s=model.session,r=selected();$('#session-title').textContent=s.title;$('#question').textContent=r?.prompt||'一个问题，多种视角。';$('#latest').hidden=!r||r.id===latest()?.id;
+  $('#round-meta').textContent=r?`${new Date(r.createdAt).toLocaleDateString('zh-CN')}  ${fmtTime(r.createdAt)}   ·   ${kinds[r.kind]}   ·   ${r.jobs.filter(j=>j.status==='done').length} / ${r.jobs.length} 份完整回答`:'';
+  for(const b of $$('#layouts button')){const on=b.dataset.layout===(model.preferences.layout||'a');b.classList.toggle('active',on);b.setAttribute('aria-pressed',String(on));}
+  const q=$('#time-search').value.trim(),rounds=s.rounds.map((r,i)=>({...r,number:i+1})).reverse().filter(r=>roundMatches(r,q));let group='';
+  const timeline=rounds.map(r=>{const date=fmtDateGroup(r.createdAt),head=date!==group?`<div class="date-group">${esc(date)}</div>`:'';group=date;return head+`<button class="time-item ${r.id===reader.roundId?'selected':''}" data-round="${r.id}"><span><time>${fmtTime(r.createdAt)}</time> ${kinds[r.kind]}${r.id===latest()?.id?' · 最新':''}</span><strong>${esc(r.prompt)}</strong><small>${r.jobs.filter(j=>j.status==='done').length} / ${r.jobs.length} 份完整回答</small></button>`;}).join('')||`<p class="hint">${q?'没有匹配的提问或回答':'提问后，这里会记录时间。'}</p>`;
+  if($('#time-list')._html!==timeline){$('#time-list')._html=timeline;$('#time-list').innerHTML=timeline;}
+  const source=s.rounds.find(x=>x.id===(r?.sourceRoundId||(r?.kind==='summary'?s.rounds[s.rounds.indexOf(r)-1]?.id:null)));
+  $('#source').hidden=r?.kind!=='summary'||!source;if(!$('#source').hidden)$('#source').innerHTML=`${PROVIDERS[r.jobs[0]?.provider]?.name||'队长'} 的总结 · 材料来自 <button data-source="${source.id}">第 ${s.rounds.indexOf(source)+1} 轮 · ${fmtTime(source.createdAt)}</button>`;
+  if(r)renderAnswers(r);else if(!$('#empty')){$('#reader').innerHTML='<section id="empty"><h2>先提出你的第一个问题</h2><p>连接成员网页后，在操作区开始圆桌。</p></section>';viewSignature='';}
+}
+function answerShell(j,layout){const p=PROVIDERS[j.provider],content=`<div class="answer-error" hidden></div><div class="text"></div><div class="answer-actions"><button data-job="${j.id}" data-read="copy">复制全文</button><button data-job="${j.id}" data-read="quote">引用到下一轮</button><button data-job="${j.id}" data-read="open">原网页 ↗</button></div>`,header=`<span class="avatar ${j.provider}">${p.short}</span><strong>${p.name}</strong><span class="answer-status"></span>`;
+  return layout==='c'?`<details class="answer" data-job="${j.id}" ${reader.expanded.includes(j.id)?'open':''}><summary><div class="answer-head">${header}<span class="chevron">⌄</span></div><div class="preview"></div></summary><div class="answer-body">${content}</div></details>`:`<article class="answer" data-job="${j.id}"><div class="answer-head">${header}</div><div class="answer-body">${content}</div></article>`;
+}
+function renderAnswers(r){
+  const layout=r.kind==='summary'?'a':model.preferences.layout||'a',providers=r.jobs.map(j=>j.provider);if(!providers.includes(reader.provider))reader.provider=providers[0];
+  let pair=reader.pair.filter(p=>providers.includes(p));for(const p of providers)if(pair.length<2&&!pair.includes(p))pair.push(p);if(r.kind!=='summary')reader.pair=pair;
+  const jobs=layout==='a'?r.jobs.filter(j=>j.provider===reader.provider):layout==='b'?pair.map(p=>r.jobs.find(j=>j.provider===p)):r.jobs,signature=JSON.stringify([r.id,layout,reader.provider,pair,r.jobs.map(j=>j.id)]);
+  if(viewSignature!==signature){viewSignature=signature;const options=chosen=>providers.map(p=>`<option value="${p}" ${p===chosen?'selected':''}>${PROVIDERS[p].name}</option>`).join('');
+    const nav=layout==='a'&&r.kind!=='summary'?`<div class="ai-tabs" role="group" aria-label="本轮回答者">${providers.map(p=>`<button data-ai="${p}" aria-pressed="${p===reader.provider}" class="${p===reader.provider?'active':''}">${PROVIDERS[p].name}</button>`).join('')}</div>`:layout==='b'?`<div class="pair-select"><label>左侧 <select id="pair-left">${options(pair[0])}</select></label><label>右侧 <select id="pair-right">${options(pair[1])}</select></label></div>`:'';
+    $('#reader').innerHTML=nav+`<div id="answers" class="answers layout-${layout}">${jobs.map(j=>answerShell(j,layout)).join('')}</div>`;
+    for(const card of $$('#answers details'))card.addEventListener('toggle',()=>{if(!card.isConnected)return;reader.expanded=card.open?[...new Set([...reader.expanded,card.dataset.job])]:reader.expanded.filter(id=>id!==card.dataset.job);persistReader();updateAnswer(card,selected()?.jobs.find(j=>j.id===card.dataset.job));});
+    for(const id of ['pair-left','pair-right'])$('#'+id)?.addEventListener('change',e=>{const i=id==='pair-left'?0:1,other=1-i,previous=reader.pair[i];reader.pair[i]=e.target.value;if(reader.pair[other]===e.target.value)reader.pair[other]=previous;persistReader();renderAnswers(selected());});
   }
+  for(const card of $$('#answers .answer'))updateAnswer(card,r.jobs.find(j=>j.id===card.dataset.job));
 }
-function render(){if(!model)return;if(model.supportWarning)error(model.supportWarning);const s=model.session,r=currentRound(),active=busy(s);$('#member-strip').innerHTML=s.members.map(k=>`<button class="member-chip ${s.bindings[k]?'connected':''}" data-open-provider="${k}" title="打开 ${PROVIDERS[k].name} 网页">${PROVIDERS[k].name}</button>`).join('')+`<button class="edit-members" id="edit-members" ${active?'disabled':''}>成员</button>`;$('#member-count').textContent=s.members.length+' 位成员';$('#empty').hidden=!!r;$('#conversation').hidden=!r;
-  $('#connect').textContent='打开并连接'+s.members.length+'家网页';$('#send').textContent=active?'停止本轮 ■':r?'继续追问 ↑':'开始圆桌 ↑';$('#new').disabled=active;
-  $('#summary').disabled=active||!r?.jobs.some(j=>j.status==='done'&&j.text);$('#discuss').disabled=active||(r?.jobs.filter(j=>j.status==='done'&&j.text).length||0)<2;$('#iterate').disabled=active||!r;
-  if(r){$('#session-title').textContent=s.title;$('#question').textContent=r.prompt;$('#kind').textContent={ask:'独立回答',iterate:'独立迭代',discuss:'观点讨论',summary:'队长总结'}[r.kind];$('#rounds').textContent='第 '+(s.rounds.indexOf(r)+1)+' 轮 ⌄';$('#progress-text').textContent=r.jobs.filter(j=>j.status==='done').length+' / '+r.jobs.length+' 已完成';renderAnswers(r);}else{cards.clear();$('#answers').replaceChildren();}
+function updateAnswer(card,j){if(!j)return;card.querySelector('.answer-status').textContent=LABELS[j.status];card.dataset.status=j.status;const warning=card.querySelector('.answer-error');warning.hidden=!j.error;warning.textContent=j.error;if(card.querySelector('.preview'))card.querySelector('.preview').textContent='原文开头 · '+(j.text||j.error||LABELS[j.status]).slice(0,180).replace(/\s+/g,' ');
+  for(const b of card.querySelectorAll('[data-read="copy"],[data-read="quote"]'))b.disabled=!j.text;
+  if(card.tagName==='DETAILS'&&!card.open)return;const target=card.querySelector('.text'),signature=j.format+'|'+j.text+'|'+j.status;if(textCache.get(target)===signature)return;textCache.set(target,signature);if(!j.text){target.textContent=ACTIVE.has(j.status)?'等待这位成员的网页回答…':'尚无完整回答，请在侧栏核对成员状态。';return;}renderMarkdown(target,j.text,j.format);
 }
-function dialog(title,html){$('#dialog-title').textContent=title;$('#dialog-body').innerHTML=html;$('#dialog').showModal();}
-function close(){ $('#dialog').close(); }
-function members(isNew){dialog(isNew?'新建一场圆桌':'选择圆桌成员',`<p>${isNew?'新问题使用独立的网页对话；现有圆桌保留在历史中。':'更改从下一轮生效，已有回答完整保留。'}选择 2–3 位成员。</p><div class="member-options">${Object.keys(PROVIDERS).map(k=>`<label class="member-option"><input type="checkbox" name="member" value="${k}" ${model.session.members.includes(k)?'checked':''}>${PROVIDERS[k].name}</label>`).join('')}</div><div class="dialog-error" role="status"></div><div class="dialog-footer"><button data-modal="close">取消</button><button class="primary" data-modal="members" data-new="${isNew}">${isNew?'新建圆桌':'保存'}</button></div>`);}
-async function start(kind,options){if(['ask','iterate'].includes(kind)&&!$('#prompt').value.trim()){error('请先输入问题或迭代要求。');$('#prompt').focus();return;}if(currentRound()!==model.session.rounds.at(-1)&&kind!=='ask'){error('请切到最新一轮后再继续讨论或总结。');return;}const original=$('#prompt').value;const ok=await act('start',{kind,text:original,options});if(ok&&$('#prompt').value===original){clearTimeout(draftTimer);$('#prompt').value='';await chrome.storage.session.remove('draft.'+model.session.id);}}
-function summary(){const answers=currentRound().jobs.filter(j=>j.status==='done'&&j.text);dialog('请一位队长收拢观点',`<p>交给队长本轮 ${answers.length} 份完整回答。未完成的成员不会混入总结材料。</p><label class="field">队长<select id="captain">${model.session.members.map(k=>`<option value="${k}">${PROVIDERS[k].name}</option>`).join('')}</select></label><label class="field">总结深度<select id="depth"><option>简要结论</option><option>深入分析</option></select></label><div class="dialog-footer"><button data-modal="close">取消</button><button data-modal="summary" class="primary">开始总结</button></div>`);}
-async function copy(text){try{await navigator.clipboard.writeText(text);notice('已复制完整内容。');}catch{dialog('选择文字复制',`<p>浏览器未允许自动复制，可以选择下方完整文字复制。</p><textarea readonly class="copy-area">${escape(text)}</textarea>`);$('.copy-area').select();}}
-function download(){const text=toMarkdown(model.session),url=URL.createObjectURL(new Blob([text],{type:'text/markdown;charset=utf-8'}));const a=document.createElement('a');a.href=url;const date=new Date().toISOString().slice(0,10).replaceAll('-','');a.download=date+'-AI圆桌lite-'+model.session.id.slice(0,8)+'.md';a.click();setTimeout(()=>URL.revokeObjectURL(url),1500);notice('已导出完整圆桌记录。');}
-$('#send').addEventListener('click',()=>{const active=model.session.rounds.find(r=>r.jobs.some(j=>ACTIVE.has(j.status)));if(active)act('stop',{roundId:active.id});else start('ask');});
-$('#prompt').addEventListener('keydown',event=>{if(event.ctrlKey&&event.key==='Enter'&&!event.isComposing&&!busy(model.session)){event.preventDefault();start('ask');}});
-$('#prompt').addEventListener('input',()=>{clearTimeout(draftTimer);const sessionId=model?.session.id,text=$('#prompt').value;draftTimer=setTimeout(()=>{chrome.storage.session.set({['draft.'+sessionId]:text}).catch(e=>error('草稿保存失败：'+e.message));},250);});
-$('#new').addEventListener('click',()=>members(true));$('#connect').addEventListener('click',()=>act('connect'));
-$('#member-strip').addEventListener('click',event=>{const button=event.target.closest('button');if(!button)return;if(button.id==='edit-members')members(false);else act('open',{provider:button.dataset.openProvider});});
-$('#summary').addEventListener('click',summary);$('#discuss').addEventListener('click',()=>start('discuss'));$('#iterate').addEventListener('click',()=>start('iterate'));
-$('#rounds').addEventListener('click',()=>dialog('回看轮次',`<div class="history-list">${model.session.rounds.map((r,i)=>`<button data-modal="round" data-round="${r.id}">第 ${i+1} 轮 · ${escape(r.prompt.slice(0,28))}</button>`).join('')}</div>`));
-$('#history').addEventListener('click',()=>dialog('最近的圆桌',`<div class="history-list">${model.index.sessions.map(s=>`<div class="history-row"><button data-modal="session" data-session="${s.id}"><span>${escape(s.title)}</span><small>${s.rounds} 轮</small></button><button data-modal="delete" data-session="${s.id}" aria-label="删除 ${escape(s.title)}">×</button></div>`).join('')}</div>`));
-$('#menu').addEventListener('click',()=>dialog('这场圆桌',`<div class="history-list"><button data-modal="export">导出完整 Markdown</button><button data-modal="connect">打开并连接成员网页</button></div><p class="version">AI圆桌lite 0.1.0 · 首批 DeepSeek / Kimi / 豆包。<br>网页未完成登录或暂停时，请打开对应原网页处理。</p>`));
-$('#answers').addEventListener('click',event=>{const button=event.target.closest('[data-job-op]');if(!button)return;const card=button.closest('[data-job]'),job=card._job,operation=button.dataset.jobOp;const args={roundId:currentRound().id,jobId:job.id,operation};
-  if(operation==='copy')copy(job.text);else if(operation==='open')act('open',{provider:job.provider});else if(operation==='retry'&&job.phase==='attempted')dialog('确认重新发送？',`<p>此前已经尝试发送，重发可能在网页上产生重复问题。建议先“重新提取”确认是否已有回答。</p><div class="dialog-footer"><button data-modal="close">先不重发</button><button class="primary" data-modal="retry" data-job="${job.id}" data-round="${currentRound().id}">确认重发这一家</button></div>`);else act('job',args);
-});
+function dialog(title,html){$('#dialog-title').textContent=title;$('#dialog-body').innerHTML=html;if(!$('#dialog').open)$('#dialog').showModal();}
+function close(){$('#dialog').close();}
+async function send(){
+  if(!model)return;const active=model.session.rounds.find(r=>r.jobs.some(j=>ACTIVE.has(j.status)));if(active){await act('stop',{roundId:active.id});return;}if(starting)return;
+  const text=$('#prompt').value,kind=$('#kind').value;if(['ask','iterate'].includes(kind)&&!text.trim()){error('请先输入问题或迭代要求。');$('#prompt').focus();return;}
+  const options={captain:$('#captain').value,depth:$('#depth').value},baseRoundId=latest()?.id||null;starting=true;renderController();try{await draftQueue;await act('start',{kind,text,options,baseRoundId});}catch(e){error(e.message);}finally{starting=false;await refresh();}
+}
+async function preview(){const r=await act('preview',{kind:$('#kind').value,text:$('#prompt').value,options:{captain:$('#captain').value,depth:$('#depth').value}});if(!r)return;dialog('各家将收到的完整材料',`<p>下一轮基于最新记录；回看历史不会替换这些材料。</p>${r.prompts.map(p=>`<details class="prompt-preview"><summary>${PROVIDERS[p.provider].name}</summary><pre>${esc(p.prompt)}</pre></details>`).join('')}`);}
+function members(){dialog('选择参与下一轮的成员',`<p>选择 2–3 位成员，已有回答完整保留。</p><div class="member-options">${Object.entries(PROVIDERS).map(([id,p])=>`<label><input type="checkbox" name="member" value="${id}" ${model.session.members.includes(id)?'checked':''}>${p.name}</label>`).join('')}</div><button class="primary" id="save-members">保存成员</button>`);$('#save-members').onclick=async()=>{const members=$$('input[name="member"]:checked').map(x=>x.value);if(members.length<2){error('至少选择两位成员。');return;}close();await act('members',{members});};}
+async function jobAction(j,operation){const args={roundId:latest().id,jobId:j.id,operation};if(operation==='retry'&&j.phase==='attempted'){dialog('确认重新发送？','<p>此前已尝试发送，重发可能在网页产生重复问题。建议先重新提取。</p><button id="confirm-retry">确认重发这一家</button>');$('#confirm-retry').onclick=()=>{close();act('job',{...args,confirmDuplicate:true});};}else await act('job',args);}
+async function copy(text){try{await navigator.clipboard.writeText(text);notice('已复制完整内容。');}catch{dialog('选择全文复制',`<textarea class="copy-area" readonly>${esc(text)}</textarea>`);$('.copy-area').select();}}
+function download(session=model.session){const url=URL.createObjectURL(new Blob([toMarkdown(session)],{type:'text/markdown;charset=utf-8'})),a=document.createElement('a');a.href=url;a.download=new Date().toISOString().slice(0,10).replaceAll('-','')+'-AI圆桌-'+session.id.slice(0,8)+'.md';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
+async function historyList(){const data=await act('state');if(!data)return;dialog('历史圆桌',`<p>每场圆桌在自己的 Chrome 窗口打开，记录和草稿分别保存。</p><div class="history-list">${model.index.sessions.map(s=>`<div><button data-session="${s.id}">${esc(s.title)} <small>${s.rounds} 轮</small></button><button data-delete="${s.id}" aria-label="删除 ${esc(s.title)}">×</button></div>`).join('')}</div>`);}
 $('#dialog-close').addEventListener('click',close);
-$('#dialog-body').addEventListener('click',async event=>{const b=event.target.closest('[data-modal]');if(!b)return;const op=b.dataset.modal;
-  if(op==='close')close();else if(op==='members'){const selected=$$('input[name="member"]:checked').map(e=>e.value);if(selected.length<2){$('.dialog-error').textContent='至少选择两位成员。';return;}const isNew=b.dataset.new==='true';close();await act(isNew?'new':'members',{members:selected});}
-  else if(op==='summary'){const options={captain:$('#captain').value,depth:$('#depth').value};close();start('summary',options);}
-  else if(op==='round'){selectedRoundId=b.dataset.round;cards.clear();$('#answers').replaceChildren();close();render();}
-  else if(op==='session'){close();await act('select',{sessionId:b.dataset.session});}
-  else if(op==='retry'){const args={roundId:b.dataset.round,jobId:b.dataset.job,operation:'retry',confirmDuplicate:true};close();await act('job',args);}
-  else if(op==='export'){close();download();}else if(op==='connect'){close();await act('connect');}
-  else if(op==='delete'){const sessionId=b.dataset.session;close();dialog('删除这场圆桌？',`<p>删除后无法在本扩展中恢复。请先导出需要保留的内容。原网页对话不会被删除。</p><div class="dialog-footer"><button data-modal="close">取消</button><button data-modal="delete-confirm" data-session="${sessionId}">确认删除</button></div>`);}
-  else if(op==='delete-confirm'){close();await act('delete',{sessionId:b.dataset.session,confirm:true});}
-});
-$('#open-sidepanel').addEventListener('click',()=>{chrome.windows.getCurrent().then(window=>chrome.sidePanel.open({windowId:window.id})).catch(e=>error(e.message));});
-chrome.tabs.getCurrent().then(tab=>{$('#open-sidepanel').hidden=!tab;}).catch(e=>error(e.message));
-chrome.storage.onChanged.addListener((changes,area)=>{if(area==='local'&&Object.keys(changes).some(k=>k.startsWith('arena.'))){clearTimeout(refreshTimer);refreshTimer=setTimeout(refresh,70);}});
-refresh();
+$('#dialog-body').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;if(b.dataset.session){close();act('select',{sessionId:b.dataset.session});}else if(b.dataset.delete){const sessionId=b.dataset.delete;dialog('删除这场圆桌？','<p>请先导出需要保留的记录。删除只影响扩展历史，原网页对话不受影响。</p><button id="delete-confirm">确认删除记录</button>');$('#delete-confirm').onclick=async()=>{close();await act('delete',{sessionId,confirm:true});};}});
+initController();
+if(main){
+  $('#layouts').addEventListener('click',e=>{const b=e.target.closest('[data-layout]');if(b)act('preferences',{layout:b.dataset.layout});});$('#time-search').addEventListener('input',()=>{if(model)renderMain();});
+  $('#time-list').addEventListener('click',e=>{const b=e.target.closest('[data-round]');if(b){reader.roundId=b.dataset.round;persistReader();renderMain();$('#reader').scrollTop=0;}});$('#latest').onclick=()=>{reader.roundId=latest()?.id;persistReader();renderMain();};$('#source').onclick=e=>{const b=e.target.closest('[data-source]');if(b){reader.roundId=b.dataset.source;persistReader();renderMain();}};
+  $('#reader').addEventListener('click',async e=>{const b=e.target.closest('button');if(!b)return;if(b.dataset.ai){reader.provider=b.dataset.ai;persistReader();renderMain();return;}const r=selected(),j=r?.jobs.find(j=>j.id===b.dataset.job);if(!j)return;if(b.dataset.read==='copy')copy(j.text);else if(b.dataset.read==='open')act('open-answer',{roundId:r.id,jobId:j.id});else if(b.dataset.read==='quote'){try{await draftQueue;if(await act('quote',{roundId:r.id,jobId:j.id}))notice('已将完整原文引用到下一轮草稿。');}catch(e){error(e.message);}}});
+  $('#new').onclick=()=>act('new',{members:Object.keys(PROVIDERS)});$('#history').onclick=historyList;$('#export').onclick=()=>download();$('#open-sidepanel').onclick=()=>chrome.sidePanel.open({windowId}).catch(e=>error('侧栏打开失败：'+e.message));
+}else $('#open-main').onclick=()=>act('main');
+async function panelVisibility(){if(!main)return;const data=await chrome.storage.session.get('arena.panel.'+windowId),open=!!data['arena.panel.'+windowId];$('#dock').hidden=open;$('#panel-active').hidden=!open;if(!open&&model)scheduleRefresh();}
+chrome.storage.onChanged.addListener((changes,area)=>{if(area==='session'&&changes['arena.panel.'+windowId])panelVisibility().catch(e=>error(e.message));if(area!=='local')return;const draft=changes['arena.draft.'+model?.session.id]?.newValue;if(draft&&model){const known=confirmedDrafts.get(model.session.id);if(!known||(draft.revision||0)>=(known.revision||0)){confirmedDrafts.set(model.session.id,draft);if(!pendingDrafts){model.draft=draft;renderController();}}}if(Object.keys(changes).some(k=>k==='arena.preferences'||k==='arena.index'||k==='arena.session.'+model?.session.id))scheduleRefresh();});
+function connectPanel(){port=chrome.runtime.connect({name:'arena-panel:'+windowId});port.postMessage({visible:!document.hidden});port.onDisconnect.addListener(()=>{setTimeout(()=>{try{connectPanel();scheduleRefresh();}catch(e){error('侧栏重新连接失败：'+e.message);}},300);});}
+document.addEventListener('visibilitychange',()=>{if(!main&&port){try{port.postMessage({visible:!document.hidden});}catch(e){error('侧栏状态同步失败：'+e.message);}}else if(main&&!document.hidden)scheduleRefresh();});
+async function init(){windowId=(await chrome.windows.getCurrent()).id;if(!main)connectPanel();await panelVisibility();await refresh();}
+init().catch(e=>error(e.message));

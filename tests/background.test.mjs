@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import * as core from '../src/core.js';
 import {createBackgroundSupport} from '../src/background-support.js';
+import {createWorkspaces} from '../src/workspaces.js';
 
 async function harness({oldRound=false,wrongTab=false,sendFails=false,onSend,focusFails=false,onInject,onAttach,configure,tabUrl,onTargets}={}){
  const s=core.newSession(['deepseek','kimi']);const first=core.makeRound('ask','first question',s);s.rounds.push(first);
@@ -11,22 +12,37 @@ async function harness({oldRound=false,wrongTab=false,sendFails=false,onSend,foc
  for(const j of first.jobs)Object.assign(j,{status:'done',text:'FIRST ANSWER',format:'markdown',phase:'attempted',tabId:s.bindings[j.provider].tabId,url:s.bindings[j.provider].url,baseline:{count:0,lastHash:'',userCount:0,url:s.bindings[j.provider].url}});
  if(oldRound){const next=core.makeRound('iterate','second question',s);s.rounds.push(next);for(const j of next.jobs)Object.assign(j,{status:'streaming',tabId:s.bindings[j.provider].tabId});}
  if(configure)configure(s);
- const data={'arena.index':{schema:1,currentId:s.id,sessions:[{id:s.id,title:s.title,updatedAt:0,rounds:s.rounds.length}]},['arena.session.'+s.id]:s},calls=[];
+ const data={'arena.windows':{'1':s.id},'arena.index':{schema:1,currentId:s.id,sessions:[{id:s.id,title:s.title,updatedAt:0,rounds:s.rounds.length}]},['arena.session.'+s.id]:s},calls=[];
+ const get=async key=>structuredClone(key===null?data:Object.fromEntries((Array.isArray(key)?key:[key]).map(k=>[k,data[k]])));
  const noop=()=>{};let onDetach;const debuggerCalls=[];const chrome={
-  storage:{session:{get:async key=>structuredClone({[key]:data[key]}),set:async values=>Object.assign(data,structuredClone(values))},local:{get:async key=>structuredClone({[key]:data[key]}),set:async values=>Object.assign(data,structuredClone(values)),remove:async key=>{delete data[key];}}},
+  storage:{session:{get,set:async values=>Object.assign(data,structuredClone(values)),remove:async keys=>{for(const key of [keys].flat())delete data[key];}},local:{get,set:async values=>Object.assign(data,structuredClone(values)),remove:async keys=>{for(const key of [keys].flat())delete data[key];}}},
   debugger:{getTargets:async()=>onTargets?onTargets():Object.values(s.bindings).map(b=>({tabId:b.tabId,id:'target-'+b.tabId,type:'page'})),attach:async({tabId})=>{debuggerCalls.push(['attach',tabId]);if(onAttach)await onAttach(tabId);},sendCommand:async({tabId},method)=>{debuggerCalls.push([method,tabId]);if(focusFails&&method==='Emulation.setFocusEmulationEnabled')throw Error('test focus failure');},detach:async({tabId})=>debuggerCalls.push(['detach',tabId]),onDetach:{addListener:fn=>{onDetach=fn;}}},
-  sidePanel:{setPanelBehavior:async()=>{}},scripting:{executeScript:async args=>{if(onInject)await onInject(args.target.tabId);return [];}},windows:{update:async()=>{}},
-  tabs:{get:async id=>({id,status:'complete',url:tabUrl?.(id)??(id===1&&wrongTab?'https://chat.deepseek.com/a/chat/s/unrelated':Object.values(s.bindings).find(b=>b.tabId===id).url)}),sendMessage:async(tabId,message)=>{calls.push({tabId,...message});if(message.type==='YZ_SEND'&&onSend)return onSend(message);if(message.type==='YZ_SEND'&&sendFails)throw Error('test send failure');if(message.type==='YZ_PREPARE'){const url=Object.values(s.bindings).find(b=>b.tabId===tabId).url;return {ok:true,baseline:{count:1,lastHash:'base',userCount:1,url},url};}return {ok:true};}},
+  sidePanel:{setPanelBehavior:async()=>{}},scripting:{executeScript:async args=>{if(onInject)await onInject(args.target.tabId);return [];}},windows:{update:async()=>{},get:async id=>({id})},
+  tabs:{get:async id=>({id,windowId:1,status:'complete',url:tabUrl?.(id)??(id===1&&wrongTab?'https://chat.deepseek.com/a/chat/s/unrelated':Object.values(s.bindings).find(b=>b.tabId===id).url)}),sendMessage:async(tabId,message)=>{calls.push({tabId,...message});if(message.type==='YZ_SEND'&&onSend)return onSend(message);if(message.type==='YZ_SEND'&&sendFails)throw Error('test send failure');if(message.type==='YZ_PREPARE'){const url=Object.values(s.bindings).find(b=>b.tabId===tabId).url;return {ok:true,baseline:{count:1,lastHash:'base',userCount:1,url},url};}return {ok:true};}},
   alarms:{get:async()=>null,create:async()=>{},clear:async()=>{},onAlarm:{addListener:noop}},
   runtime:{onMessage:{addListener:noop},onInstalled:{addListener:noop},onStartup:{addListener:noop}}
  };
  chrome.tabs.onUpdated={addListener:noop};chrome.tabs.update=async()=>{};
- const box={...core,createBackgroundSupport,chrome,structuredClone,console,setTimeout,URL,Date};
+ const box={...core,createBackgroundSupport,createWorkspaces,chrome,structuredClone,console,setTimeout,URL,Date};
  const source=fs.readFileSync(new URL('../src/background.js',import.meta.url),'utf8').replace(/^import[^\n]*\n/gm,'');
  vm.runInNewContext(source+'\nglobalThis.audit={ready,command,supportLost};',box);await box.audit.ready;
  const job=first.jobs[0],args={sessionId:s.id,roundId:first.id,jobId:job.id};
- return {command:box.audit.command,supportLost:box.audit.supportLost,calls,args,s,job,data,debuggerCalls,onDetach};
+ return {command:box.audit.command,supportLost:box.audit.supportLost,calls,args,s,job,data,debuggerCalls,onDetach,chrome};
 }
+
+test('Quoted content and sent-draft clearing cannot be overwritten by replayed or unobserved edits',async()=>{
+ const h=await harness(),base={sessionId:h.s.id},written=await h.command({action:'draft',...base,patch:{text:'my draft'},revision:100,baseRevision:0,writer:'editor'});
+ const quoted=await h.command({action:'quote',...h.args});assert(quoted.draft.text.includes('FIRST ANSWER'));assert(quoted.draft.revision>written.draft.revision);
+ const replay=await h.command({action:'draft',...base,patch:{text:'my draft'},revision:100,baseRevision:0,writer:'editor'});assert.equal(replay.draft.text,quoted.draft.text);
+ await assert.rejects(()=>h.command({action:'draft',...base,patch:{text:'unseen overwrite'},revision:quoted.draft.revision+1,baseRevision:written.draft.revision,writer:'editor'}),/另一处改变/);
+ const sent=await h.command({action:'start',...base,kind:'ask',text:quoted.draft.text});assert.equal(sent.draft.text,'');assert(sent.draft.revision>quoted.draft.revision);
+ const late=await h.command({action:'draft',...base,patch:{text:'my draft'},revision:100,baseRevision:0,writer:'editor'});assert.equal(late.draft.text,'');
+});
+test('Closing the owning window during injection cannot send in any other window',async()=>{
+ let reached,release;const blocked=new Promise(r=>{reached=r;}),hold=new Promise(r=>{release=r;});const h=await harness({onInject:async()=>{reached();await hold;}});
+ const started=h.command({action:'start',sessionId:h.s.id,kind:'ask',text:'must cancel'});await blocked;h.chrome.windows.get=async()=>{throw Error('No window with id: 1');};release();const state=await started;
+ assert(!h.calls.some(c=>c.type==='YZ_SEND'));assert(state.session.rounds.at(-1).jobs.every(j=>j.status==='error'));
+});
 
 test('Restart loss updates the old job but cannot message a replacement or unverified debugger target',async()=>{
  for(const mode of ['replacement','lookup-failure','same']){const h=await harness({oldRound:true,onTargets:()=>{if(mode==='lookup-failure')throw Error('target lookup failed');return [{tabId:1,type:'page',id:mode==='same'?'target-1':'replacement'}];}});const job=h.s.rounds.at(-1).jobs[0];

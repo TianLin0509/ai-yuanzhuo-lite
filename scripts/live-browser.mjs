@@ -18,7 +18,7 @@ Object.assign(metadata,await enableExtensionDeveloperMode(context));
 const isArenaWorker=worker=>worker.url().startsWith('chrome-extension:')&&worker.url().endsWith('/background.js');
 let worker=context.serviceWorkers().find(isArenaWorker);if(!worker)worker=await context.waitForEvent('serviceworker',{predicate:isArenaWorker});
 const extensionId=new URL(worker.url()).host;
-const panel=context.pages()[0]||await context.newPage();await panel.goto(`chrome-extension://${extensionId}/sidepanel.html`);await panel.waitForSelector('#prompt');
+const panel=context.pages()[0]||await context.newPage();await panel.goto(`chrome-extension://${extensionId}/main.html`);await panel.waitForSelector('#prompt');
 const connect=await panel.evaluate(async()=>{const state=await chrome.runtime.sendMessage({type:'YZ_COMMAND',action:'state'});return chrome.runtime.sendMessage({type:'YZ_COMMAND',action:'connect',sessionId:state.session.id});});
 if(!connect.ok)throw new Error(connect.error);
 await panel.locator('#open-sidepanel').click();

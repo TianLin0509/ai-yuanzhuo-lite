@@ -3,6 +3,9 @@
 `npm run check` 是离线合并总入口，失败退出非零。它运行构建、每个 src/*.js 的语法检查、所有 tests/*.test.mjs 和 tests/extension.mjs。
 
 - core.test.mjs：原文完整性、讨论材料、上下文超限拒绝、重复发起保护、迟到/乱序/跨标签页事件、合法平台、完整导出。
+- workspaces.test.mjs：窗口唯一归属、并发重开、URL-only 迁移、陈旧 tabId、关闭窗口和成员移窗的拒绝边界。
+- desktop.mjs：加载真实 MV3，以受控历史和站点页面验证 A/B/C、默认视图、历史引用、双窗口隔离、草稿和窗口重开、后台重启及迟到状态回包。这些记录不是真实 AI 生成结果。
+- native-desktop.mjs：真实 Chrome SIDE_PANEL 上下文、所属窗口、唯一可见操作区、多行草稿、后台重启及原生侧栏关闭；不向 AI 网站发送消息。
 - extension.mjs：真正加载 MV3 扩展，用受控三站 HTML 验证 UI → service worker → 内容脚本 → 网页 DOM → 存储 → UI 的链路；检查资源释放和未选中网页零注入。
 - fixture.mjs 是网页数据提供器，不是独立测试入口。
 - background-support.test.mjs：Chrome 调试支持的请求归属、取消、失败传播、完整恢复日志与回收设置还原；清空 session 后的 local 日志恢复、target 身份变化、查询/落盘失败必须覆盖。background.test.mjs 还覆盖取消/停止与异步注入的发送边界竞态，以及旧任务恢复不得向复用 tabId 的新页面发送停止消息。

@@ -7,4 +7,6 @@ run(['scripts/build.mjs']);
 for(const file of fs.readdirSync(path.join(root,'src')).filter(f=>f.endsWith('.js')))run(['--check','src/'+file]);
 run(['--test',...fs.readdirSync(path.join(root,'tests')).filter(f=>f.endsWith('.test.mjs')).map(f=>'tests/'+f)]);
 run(['tests/extension.mjs']);
+run(['tests/desktop.mjs']);
+run(['tests/native-desktop.mjs']);
 run(['tests/native-background.mjs']);
