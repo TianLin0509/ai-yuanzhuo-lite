@@ -43,3 +43,15 @@ test('Restored main Tabs reject conflicting, deleted or already owned roundtable
   h.windows.set(2,{id:2});h.tabs.set(8,{id:8,windowId:2,url:h.tabs.get(7).url});
   await assert.rejects(()=>h.api.claim(2),/另一个窗口/);assert.equal(h.sessions.size,2);
 });
+
+test('Restart rebinding ignores site query parameters but never adopts a different conversation',async()=>{
+  const h=harness(),conversation='https://www.kimi.com/chat/1a0b01b5-real';
+  h.first.bindings={kimi:{tabId:404,url:conversation},deepseek:{tabId:405,url:'https://chat.deepseek.com/a/chat/s/own'}};
+  // Kimi appends ?chat_enter_method=... to the live tab URL after navigation.
+  h.tabs.set(21,{id:21,windowId:1,url:conversation+'?chat_enter_method=home'});
+  h.tabs.set(22,{id:22,windowId:1,url:'https://chat.deepseek.com/a/chat/s/other?x=1'});
+  h.tabs.set(23,{id:23,windowId:1,url:'chrome-extension://test/main.html?session='+h.first.id});
+  assert.equal(await h.api.claim(1),h.first.id);
+  assert.equal(h.first.bindings.kimi.tabId,21);assert.equal(h.first.bindings.kimi.url,conversation);
+  assert.equal(h.first.bindings.deepseek.tabId,undefined);
+});
