@@ -89,6 +89,7 @@
     }
     const busy=!!find(job.config.stop)||!!(job.config.busy&&find(job.config.busy));job.sawBusy ||= busy;
     if(Date.now()-job.startedAt>10*60*1000){emit(job,'attention',job.lastText,'等待超过 10 分钟，已停止自动读取。可打开网页查看，再重新提取。');retire(job);return;}
+    if(!owns&&!job.acknowledged){const notice=limitNotice(job.config);if(notice){emit(job,'attention',job.lastText,'已点击发送，但网页提示额度已用完（'+notice+'），提问未被接受；不会自动重发。');retire(job);return;}}
     if(!owns){if(Date.now()-job.startedAt>45000){emit(job,'attention',job.lastText,'无法确认网页中本轮提问的位置，请打开原网页核对；不会自动重发。');retire(job);}return;}
     const currentInput=find(job.config.input);
     if(!job.acknowledged&&job.dispatched&&currentInput&&!normalized(value(currentInput))&&(busy||users(job.config).length>job.baseline.userCount)){job.acknowledged=true;emit(job,'sent');}
@@ -118,6 +119,8 @@
     const root=find(job.config.root)||document.body;
     job.observer=new MutationObserver(()=>changed(job));job.observer.observe(root,{childList:true,subtree:true,characterData:true,attributes:true,attributeFilter:['disabled','aria-disabled','aria-label','class']});diagnostics.observers++;diagnostics.activeRequest=job.requestId;job.dirty=true;schedule(job,1000);
   }
+  function limitNotice(config){if(!config.limit)return '';for(const selector of config.limit.selectors)for(const el of document.querySelectorAll(selector)){const text=normalized(el.textContent).replace(/\s+/g,' ');if(visible(el)&&config.limit.text.test(text))return text.slice(0,80);}return '';}
+  function assertNoLimit(config){const notice=limitNotice(config);if(notice)throw new Error('网页提示额度已用完（'+notice+'），未发送本轮提问。请等待额度恢复或在原网页处理。');}
   function assertNoAttachments(config){if(config.draftAttachment&&find(config.draftAttachment))throw new Error('该网页有尚未发送的附件，请先处理原网页附件草稿；未发送本轮提问。');}
   async function fill(input,text,config,isCancelled){
     input.focus();
@@ -145,7 +148,7 @@
   function prepare(message){
     const config=globalThis.YuanzhuoAdapters[message.provider];if(!config)throw new Error('不支持该网页。');
     if(config.blocked&&find(config.blocked))throw new Error('网页要求人机验证，请先在原网页完成验证。');
-    assertNoAttachments(config);
+    assertNoAttachments(config);assertNoLimit(config);
     const input=find(config.input);if(!input)throw new Error('未找到可用输入框。请先打开网页完成登录或验证。');
     if(normalized(value(input)))throw new Error('该网页有尚未发送的内容。请先处理原网页草稿，再重试。');
     if(find(config.stop)||(config.busy&&find(config.busy)))throw new Error('该网页仍在生成其他回答，请等待结束。');
@@ -167,7 +170,7 @@
       for(let i=0;i<8&&!available(button);i++){await sleep(160);if(job.cancelled)return {status:'stopped'};button=find(config.send);}
       if(!available(button)){retire(job);throw new Error('未找到可用发送按钮，文字保留在网页中，未自动按回车或重试。');}
       // Nothing may yield between final ownership/integrity checks and the click.
-      assertNoAttachments(config);
+      assertNoAttachments(config);assertNoLimit(config);
       if(!input.isConnected||find(config.input)!==input)throw new Error('发送前网页输入框已变化，已取消发送，请检查原网页。');
       if(cleanUrl()!==message.baseline.url)throw new Error('发送前网页对话已变化，已取消发送。');
       if(normalized(value(input))!==normalized(message.prompt))throw new Error('发送前网页输入内容已变化，已取消发送，请检查原网页。');

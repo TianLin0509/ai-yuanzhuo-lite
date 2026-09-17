@@ -1,4 +1,5 @@
 // Window ownership is browser-session state. Durable answers never depend on a tab ID.
+import {cleanUrl} from './core.js';
 export function createWorkspaces(chrome, {loadSession, createSession, mutate, getIndex, providers, providerFor}) {
   const key='arena.windows'; let owners={}, queue=Promise.resolve(),openQueue=Promise.resolve();
   const ready=chrome.storage.session.get(key).then(data=>{owners=data[key]||{};});
@@ -49,10 +50,11 @@ export function createWorkspaces(chrome, {loadSession, createSession, mutate, ge
       }
       const session=await loadSession(sessionId);
       // Browser restarts can reuse numeric tab IDs. Match saved conversation URLs
-      // inside this window, never trust a durable ID by itself.
+      // inside this window, never trust a durable ID by itself. Sites append query
+      // parameters (Kimi ?chat_enter_method=...), so compare origin and path only.
       if(Object.keys(session.bindings||{}).length)await mutate(sessionId,s=>{
         for(const [p,b] of Object.entries(s.bindings)){
-          const tab=tabs.find(t=>providerFor(t.url||t.pendingUrl)===p&&(t.url||t.pendingUrl)===b.url);
+          const tab=tabs.find(t=>providerFor(t.url||t.pendingUrl)===p&&cleanUrl(t.url||t.pendingUrl)===cleanUrl(b.url));
           s.bindings[p]=tab?{tabId:tab.id,url:b.url}:{url:b.url};
         }
       });

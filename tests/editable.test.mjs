@@ -114,3 +114,89 @@ test('Virtualized user rows use stable message identity and exclude changing tim
   const bad=await page.evaluate(message=>request(message),{...request,requestId:'virtual-manual',anchor:event.anchor});assert.equal(bad.ok,false);assert(bad.error.includes('不属于本轮'));
  }finally{await browser.close();}
 });
+
+test('2026-09 live DOM: Doubao dual editor and DeepSeek send icon revision each send the exact prompt once',async()=>{
+ const browser=await chromium.launch({channel:'chromium',headless:true});
+ try{
+  const prompt='第一行 YZ\n\n  缩进保留 <x> & y';
+  const cases={
+   // Logged-in Doubao home renders a textarea with a tiptap editor stacked on top.
+   // A paste into tiptap is forwarded to the textarea and tiptap stays empty.
+   doubao:{html:'<main><textarea class="textarea-YelHeN"></textarea><div contenteditable="true" class="tiptap ProseMirror"></div><button id="flow-end-msg-send" disabled>Send</button></main>',setup:()=>{const ta=document.querySelector('textarea'),rich=document.querySelector('.ProseMirror'),button=document.querySelector('#flow-end-msg-send');ta.addEventListener('input',()=>{button.disabled=!ta.value;});rich.addEventListener('paste',e=>{e.preventDefault();ta.value=e.clipboardData.getData('text/plain');ta.dispatchEvent(new Event('input',{bubbles:true}));});button.onclick=()=>{sent.push(ta.value);ta.value='';button.disabled=true;};}},
+   deepseek:{html:'<main><textarea placeholder="Message DeepSeek"></textarea><div role="button" class="ds-button ds-button--primary ds-button--filled ds-button--circle ds-button--m" tabindex="0"><svg><path d="M8.3125 0.980206C8.66767 0.980206 9 1.2 9 1.5"></path></svg></div></main>',setup:()=>{const ta=document.querySelector('textarea');document.querySelector('[role="button"]').onclick=()=>{sent.push(ta.value);ta.value='';};}}
+  };
+  for(const [provider,{html,setup}] of Object.entries(cases)){
+   const page=await browser.newPage();await page.setContent(html);
+   await page.evaluate(()=>{window.sent=[];window.chrome={runtime:{id:'test',onMessage:{addListener(fn){window.listener=fn;}},sendMessage:async()=>({ok:true})}};window.request=message=>new Promise(resolve=>listener(message,{id:'test'},resolve));});
+   await page.evaluate(setup);
+   for(const name of ['adapters.js','content.js'])await page.addScriptTag({content:fs.readFileSync(new URL('../src/'+name,import.meta.url),'utf8')});
+   const prep=await page.evaluate(p=>request({type:'YZ_PREPARE',provider:p}),provider);assert.equal(prep.ok,true,provider+': '+prep.error);
+   const r=await page.evaluate(({p,prompt,baseline})=>request({type:'YZ_SEND',provider:p,requestId:'live-dom-'+p,prompt,baseline}),{p:provider,prompt,baseline:prep.baseline});
+   assert.equal(r.ok,true,provider+': '+r.error);
+   assert.deepEqual(await page.evaluate(()=>sent),[prompt],provider);
+   await page.evaluate(p=>request({type:'YZ_STOP',requestId:'live-dom-'+p}),provider);
+   await page.close();
+  }
+ }finally{await browser.close();}
+});
+
+test('2026-09 live DOM: Doubao conversation index entries that echo prompts are never controls',async()=>{
+ const browser=await chromium.launch({channel:'chromium',headless:true});
+ try{
+  const page=await browser.newPage();
+  // Each index entry's aria-label is a full earlier prompt; peer answers can contain 停止/发送/复制/Stop/Copy.
+  await page.setContent('<main><nav><button data-index-entry-key="a" aria-label="旧问题：请停止 Stop 发送 复制 Copy" class="stop-entry">.</button></nav><textarea class="textarea-YelHeN"></textarea><button id="flow-end-msg-send" disabled>Send</button></main>');
+  await page.evaluate(()=>{window.sent=[];window.entryClicks=0;const ta=document.querySelector('textarea'),button=document.querySelector('#flow-end-msg-send');document.querySelector('[data-index-entry-key]').onclick=()=>entryClicks++;ta.addEventListener('input',()=>{button.disabled=!ta.value;});button.onclick=()=>{sent.push(ta.value);ta.value='';button.disabled=true;};window.chrome={runtime:{id:'test',onMessage:{addListener(fn){window.listener=fn;}},sendMessage:async()=>({ok:true})}};window.request=message=>new Promise(resolve=>listener(message,{id:'test'},resolve));});
+  for(const name of ['adapters.js','content.js'])await page.addScriptTag({content:fs.readFileSync(new URL('../src/'+name,import.meta.url),'utf8')});
+  const prep=await page.evaluate(()=>request({type:'YZ_PREPARE',provider:'doubao'}));assert.equal(prep.ok,true,prep.error);
+  const r=await page.evaluate(baseline=>request({type:'YZ_SEND',provider:'doubao',requestId:'index-entry',prompt:'新问题',baseline}),prep.baseline);assert.equal(r.ok,true,r.error);
+  assert.deepEqual(await page.evaluate(()=>sent),['新问题']);
+  const stopped=await page.evaluate(()=>request({type:'YZ_STOP',requestId:'index-entry',stopGeneration:true}));assert.equal(stopped.pageStopped,false);
+  assert.equal(await page.evaluate(()=>entryClicks),0);
+  const controls=await page.evaluate(()=>['send','stop','complete'].map(k=>YuanzhuoAdapters.doubao[k].filter(s=>document.querySelector(s)?.hasAttribute('data-index-entry-key'))).flat());
+  assert.deepEqual(controls,[]);
+ }finally{await browser.close();}
+});
+
+test('2026-09 live DOM: Kimi waits for a class-disabled send control instead of clicking it',async()=>{
+ const browser=await chromium.launch({channel:'chromium',headless:true});
+ try{
+  const page=await browser.newPage();
+  // Right after an answer, Kimi keeps .send-button-container.disabled for a moment; clicks do nothing.
+  await page.setContent('<main><div contenteditable="true" role="textbox"></div><div class="send-button-container disabled"><svg name="Send"></svg></div></main>');
+  await page.evaluate(()=>{window.sent=[];window.ignored=0;const input=document.querySelector('[contenteditable]'),button=document.querySelector('.send-button-container');
+   input.addEventListener('paste',e=>{e.preventDefault();input.textContent=e.clipboardData.getData('text/plain');setTimeout(()=>button.classList.remove('disabled'),600);});
+   button.onclick=()=>{if(button.classList.contains('disabled')){ignored++;return;}sent.push(input.textContent);input.textContent='';};
+   window.chrome={runtime:{id:'test',onMessage:{addListener(fn){window.listener=fn;}},sendMessage:async()=>({ok:true})}};window.request=message=>new Promise(resolve=>listener(message,{id:'test'},resolve));});
+  for(const name of ['adapters.js','content.js'])await page.addScriptTag({content:fs.readFileSync(new URL('../src/'+name,import.meta.url),'utf8')});
+  const prep=await page.evaluate(()=>request({type:'YZ_PREPARE',provider:'kimi'}));assert.equal(prep.ok,true,prep.error);
+  const r=await page.evaluate(baseline=>request({type:'YZ_SEND',provider:'kimi',requestId:'kimi-disabled',prompt:'等按钮可用',baseline}),prep.baseline);assert.equal(r.ok,true,r.error);
+  assert.deepEqual(await page.evaluate(()=>({sent,ignored})),{sent:['等按钮可用'],ignored:0});
+  await page.evaluate(()=>request({type:'YZ_STOP',requestId:'kimi-disabled'}));
+ }finally{await browser.close();}
+});
+
+test('2026-09 live DOM: a Kimi quota notice fails explicitly before or after Send without resending',async()=>{
+ const browser=await chromium.launch({channel:'chromium',headless:true});
+ try{
+  // Before Send: the composer bar already says the free quota is used up.
+  let page=await browser.newPage();
+  await page.setContent('<main><div class="chat-editor"><div class="chat-input-bar"><div class="chat-input-bar-content"><span>Your free quota is used up. Refreshes at 09-19.</span></div></div><div contenteditable="true" role="textbox"></div><div class="send-button-container"><svg name="Send"></svg></div></div></main>');
+  const harness=async()=>{await page.evaluate(()=>{window.events=[];window.sent=[];window.chrome={runtime:{id:'test',onMessage:{addListener(fn){window.listener=fn;}},sendMessage:async e=>{events.push(e);return {ok:true};}}};window.request=message=>new Promise(resolve=>listener(message,{id:'test'},resolve));});for(const name of ['adapters.js','content.js'])await page.addScriptTag({content:fs.readFileSync(new URL('../src/'+name,import.meta.url),'utf8')});};
+  await harness();
+  const refused=await page.evaluate(()=>request({type:'YZ_PREPARE',provider:'kimi'}));
+  assert.equal(refused.ok,false);assert.match(refused.error,/额度/);assert.match(refused.error,/free quota is used up/);
+  await page.close();
+  // After Send: the click only opens a quota modal; the prompt stays in the editor.
+  page=await browser.newPage();
+  await page.setContent('<main><div class="chat-editor"><div contenteditable="true" role="textbox"></div><div class="send-button-container"><svg name="Send"></svg></div></div></main>');
+  await harness();
+  await page.evaluate(()=>{const input=document.querySelector('[contenteditable]');input.addEventListener('paste',e=>{e.preventDefault();input.textContent=e.clipboardData.getData('text/plain');});document.querySelector('.send-button-container').onclick=()=>{document.body.insertAdjacentHTML('beforeend','<div class="modal-mask"></div><div class="modal-container">Tips Credits used up. Got it</div>');};});
+  const prep=await page.evaluate(()=>request({type:'YZ_PREPARE',provider:'kimi'}));assert.equal(prep.ok,true,prep.error);
+  const r=await page.evaluate(baseline=>request({type:'YZ_SEND',provider:'kimi',requestId:'quota',prompt:'额度测试',baseline}),prep.baseline);assert.equal(r.ok,true,r.error);
+  await page.waitForFunction(()=>events.some(e=>e.status==='attention'),{},{timeout:8000});
+  const event=await page.evaluate(()=>events.find(e=>e.status==='attention'));
+  assert.equal(event.phase,'attempted');assert.match(event.error,/额度/);assert.match(event.error,/不会自动重发/);
+  const d=await page.evaluate(()=>__yuanzhuoLite.diagnostics);assert.equal(d.observers,0);assert.equal(d.timers,0);
+ }finally{await browser.close();}
+});
