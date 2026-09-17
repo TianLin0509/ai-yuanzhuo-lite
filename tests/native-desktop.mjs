@@ -28,6 +28,8 @@ try{
   assert.equal(await evaluate('chrome.windows.getCurrent().then(w=>w.id)'),windowId,'sidepanel own window (getContexts reports -1 for a global panel)');
   await until(async()=>(await evaluate('document.querySelector("#prompt")?.value'))==='原生侧栏草稿 · GPT / 128\n保留多行。','native panel draft');
   assert.equal(await evaluate('document.querySelectorAll(".answer").length'),0);
+  // A freshly opened native panel can report innerHeight 0 before its first layout.
+  await until(()=>evaluate('innerHeight>0'),'native panel layout');
   assert(await evaluate('(()=>{const r=document.querySelector("#send").getBoundingClientRect();return r.top>=0&&r.bottom<=innerHeight;})()'),'native primary action stays visible');
   await evaluate('document.querySelector("#prompt").value="Native panel survives close 256";document.querySelector("#prompt").dispatchEvent(new Event("input",{bubbles:true}));');
   fs.writeFileSync(path.join(out,'20260912-native-sidepanel-codex.png'),Buffer.from((await send('Page.captureScreenshot',{format:'png'},sid)).data,'base64'));
