@@ -56,7 +56,6 @@ export function createBackgroundSupport(api,{onLost,onError}){
     await api.debugger.sendCommand({tabId},'Page.enable',{});
     await api.debugger.sendCommand({tabId},'Page.setWebLifecycleState',{state:'active'});
     await api.debugger.sendCommand({tabId},'Emulation.setFocusEmulationEnabled',{enabled:true});
-    await api.debugger.sendCommand({tabId},'Emulation.setIdleOverride',{isUserActive:true,isScreenUnlocked:true});
     if(lease.lost)throw new Error('后台支持已被取消，请核对原网页。');
    }catch(e){
     let detail='';try{await cleanup(lease);}catch(cleanupError){detail='；'+cleanupError.message;}
