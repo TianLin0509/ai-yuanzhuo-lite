@@ -5,7 +5,7 @@ import path from 'node:path';
 import {createHash} from 'node:crypto';
 import {launchNativeBrowser} from '../scripts/native-browser.mjs';
 import {fixture} from './fixture.mjs';
-import {providerFor,PROVIDERS} from '../src/core.js';
+import {providerFor,PROVIDERS,DEFAULT_MEMBERS} from '../src/core.js';
 
 await import('../scripts/build.mjs');
 const root=path.resolve(import.meta.dirname,'..'),out=path.join(root,'artifacts');fs.mkdirSync(out,{recursive:true});
@@ -79,7 +79,7 @@ try{
   await panel.locator('#connect').dispatchEvent('click');
   await panel.waitForFunction(()=>document.querySelectorAll('.member-chip.connected').length===3,undefined,{polling:100});
   let state=await command('state');const bindings=state.session.bindings,tabs={};evidence.bindings=bindings;
-  for(const provider of Object.keys(PROVIDERS)){
+  for(const provider of DEFAULT_MEMBERS){
     for(let attempt=0;attempt<100;attempt++){tabs[provider]=context.pages().find(page=>providerFor(page.url())===provider);if(tabs[provider])break;await delay(50);}
     assert(tabs[provider],provider+' tab must exist');
     // Native extension-created tabs can navigate before the CDP client installs
@@ -135,7 +135,7 @@ try{
   for(let remaining=hiddenDuration;remaining>0;){const wait=Math.min(remaining,30000);await delay(wait);remaining-=wait;if(longHidden)console.log(`Native hidden baseline: ${Math.round((hiddenDuration-remaining)/1000)}s / 330s`);}
   const baselineEnd=await views();
   evidence.controlBaselineEnd=await controlView();assertControl(evidence.controlBaselineEnd,evidence.controlBaseline.frames);
-  for(const provider of Object.keys(PROVIDERS)){
+  for(const provider of DEFAULT_MEMBERS){
     assert.equal(baselineEnd[provider].frames,baselineStart[provider].frames,provider+' hidden rAF must not advance');
     assert.equal(baselineEnd[provider].active,false);assert.equal(baselineEnd[provider].visibility,'hidden');
   }
@@ -173,7 +173,7 @@ try{
     for(let attempt=0;attempt<50;attempt++){evidence.after=await views();evidence.afterDebugger=await debuggerOwned();if(Object.values(evidence.after).every(view=>view.hidden)&&Object.values(evidence.afterDebugger).every(value=>!value.attached))break;await delay(100);}
     assert(Object.values(evidence.after).every(view=>!view.active&&view.hidden&&view.visibility==='hidden'&&view.nativeApis),'Completed tabs return to native hidden state');
     assert(Object.values(evidence.afterDebugger).every(value=>!value.attached),'Completion releases all extension debug attachments');
-    for(const provider of Object.keys(PROVIDERS))assert.equal(evidence.after[provider].autoDiscardable,baselineStart[provider].autoDiscardable,provider+' auto-discard policy restored');
+    for(const provider of DEFAULT_MEMBERS)assert.equal(evidence.after[provider].autoDiscardable,baselineStart[provider].autoDiscardable,provider+' auto-discard policy restored');
     evidence.controlAfter=await controlView();assertControl(evidence.controlAfter,evidence.controlBaseline.frames);
     evidence.windowAfter=await windowState();if(minimized)assert.equal(evidence.windowAfter,'minimized');
     evidence.jobs=jobs.map(job=>({provider:job.provider,status:job.status,text:job.text}));

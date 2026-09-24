@@ -44,14 +44,14 @@ try{
  const sessionId=state.session.id,firstJob=state.session.rounds[0].jobs[0];
  await command('job',{sessionId,roundId:state.session.rounds[0].id,jobId:firstJob.id,operation:'reread'});await done();assert.equal((await tabs.deepseek.evaluate(()=>__fixture.sent)).length,1);
  checks.push('Reread reuses response boundary and never sends a second prompt');
- await panel.locator('#prompt').fill('第二轮：只补充检查清单。');await panel.locator('#kind').selectOption('iterate');await panel.locator('#send').click();await done(2);state=await getState();assert.equal(state.session.rounds.length,2);for(const page of Object.values(tabs))assert.equal((await page.evaluate(()=>__fixture.sent))[1],'第二轮：只补充检查清单。');
+ await panel.locator('#prompt').fill('第二轮：只补充检查清单。');await panel.locator('[data-kind="iterate"]').click();await panel.locator('#send').click();await done(2);state=await getState();assert.equal(state.session.rounds.length,2);for(const page of Object.values(tabs))assert.equal((await page.evaluate(()=>__fixture.sent))[1],'第二轮：只补充检查清单。');
  await panel.reload();await panel.waitForSelector('.answer');state=await getState();assert.equal(state.session.rounds.length,2);checks.push('Independent iteration exact text and sidepanel reload/history persistence');
  const preservedFirst=state.session.rounds[0].jobs.map(j=>j.text);
  for(const operation of ['reread','retry'])await assert.rejects(()=>command('job',{sessionId,roundId:state.session.rounds[0].id,jobId:firstJob.id,operation,confirmDuplicate:true}),/历史轮次/);
  state=await getState();assert.deepEqual(state.session.rounds[0].jobs.map(j=>j.text),preservedFirst);assert.equal((await tabs.deepseek.evaluate(()=>__fixture.sent)).length,2);
  checks.push('Historical reread/retry rejected without replacing old answers or dispatching another prompt');
  const priorAnswers=Object.fromEntries(state.session.rounds.at(-1).jobs.map(j=>[j.provider,j.text]));
- await panel.locator('#prompt').fill('请比较分歧。');await panel.locator('#kind').selectOption('discuss');await panel.locator('#send').click();await done(3);state=await getState();assert.equal(state.session.rounds.at(-1).kind,'discuss');
+ await panel.locator('#prompt').fill('请比较分歧。');await panel.locator('[data-kind="discuss"]').click();await panel.locator('#send').click();await done(3);state=await getState();assert.equal(state.session.rounds.at(-1).kind,'discuss');
  const peerMatrix={deepseek:['kimi','doubao'],kimi:['deepseek','doubao'],doubao:['deepseek','kimi']};
  for(const [provider,page] of Object.entries(tabs)){
   const sent=await page.evaluate(()=>__fixture.sent);assert.equal(sent.length,3);const prompt=sent[2];
@@ -61,11 +61,11 @@ try{
   for(const peer of peerMatrix[provider]){assert(prompt.includes(priorAnswers[peer]),provider+' must receive full '+peer+' answer');assert(prompt.includes('【'+PROVIDERS[peer].name+' 的回答】:'));}
  }
  checks.push('Actual three-site discussion delivery contains each recipient\'s two peers in full and excludes its own answer');
- await panel.locator('#kind').selectOption('summary');await panel.locator('#captain').selectOption('kimi');await panel.locator('#depth').selectOption('深入分析');await panel.locator('#send').click();
+ await panel.locator('[data-kind="summary"]').click();await panel.locator('#captain').selectOption('kimi');await panel.locator('#depth').selectOption('深入分析');await panel.locator('#send').click();
  if(await panel.locator('#latest').isVisible())await panel.locator('#latest').click();
  await panel.waitForFunction(()=>document.querySelectorAll('.answer').length===1&&document.querySelector('.answer')?.dataset.status==='done',{},{timeout:30000});state=await getState();assert.equal(state.session.rounds.at(-1).jobs[0].provider,'kimi');checks.push('Captain summary dispatches only selected provider');
  // New round must remain stopped even if fixture answers arrive afterwards.
- await panel.locator('#kind').selectOption('ask');await panel.locator('#prompt').fill('第三题等待停止');await panel.locator('#send').click();await panel.waitForFunction(()=>document.querySelectorAll('.answer').length===3);await panel.locator('#send').click();await panel.waitForTimeout(4500);state=await getState();assert(state.session.rounds.at(-1).jobs.every(j=>j.status==='stopped'));
+ await panel.locator('[data-kind="ask"]').click();await panel.locator('#prompt').fill('第三题等待停止');await panel.locator('#send').click();await panel.waitForFunction(()=>document.querySelectorAll('.answer').length===3);await panel.locator('#send').click();await panel.waitForTimeout(4500);state=await getState();assert(state.session.rounds.at(-1).jobs.every(j=>j.status==='stopped'));
  checks.push('Stop closes all watchers and rejects late terminal events');
  assert.deepEqual(failures,[]);fs.writeFileSync(path.join(out,'20260909-lite-extension-fixture-codex.json'),JSON.stringify({createdAt:new Date().toISOString(),browser:context.browser()?.version()||'Chromium',extensionId,checks,diagnostic,failures,profile},null,2));console.log(JSON.stringify({checks,diagnostic,failures},null,2));
 }catch(error){fs.writeFileSync(path.join(out,'20260909-lite-test-error-codex.txt'),error.stack+'\n'+JSON.stringify(failures));const extensionPage=context.pages().find(p=>p.url().startsWith('chrome-extension:'));if(extensionPage){await extensionPage.screenshot({path:path.join(out,'20260909-lite-fixture-failure-codex.png'),fullPage:true});fs.writeFileSync(path.join(out,'20260909-lite-fixture-failure-state-codex.json'),JSON.stringify(await extensionPage.evaluate(()=>chrome.storage.local.get(null)),null,2));}throw error;}finally{await context.close();}
