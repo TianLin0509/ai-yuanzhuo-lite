@@ -58,7 +58,7 @@ async function connection(sessionId,provider,{focus=false,verifyConversation=fal
   return tab;
 }
 async function inject(tabId,provider){const tab=await chrome.tabs.get(tabId);if(providerFor(tab.url)!==provider)throw new Error('网页地址不属于本轮 AI，已停止操作。');await chrome.scripting.executeScript({target:{tabId},files:['adapters.js','content.js'],world:'ISOLATED'});}
-async function pageMessage(tabId,message){const result=await chrome.tabs.sendMessage(tabId,message,{frameId:0});if(!result?.ok)throw new Error(result?.error||'网页没有确认操作，请打开原网页检查。');return result;}
+async function pageMessage(tabId,message){const result=await chrome.tabs.sendMessage(tabId,message,{frameId:0});if(!result?.ok)throw Object.assign(new Error(result?.error||'网页没有确认操作，请打开原网页检查。'),{code:result?.code,question:result?.question,notSent:result?.notSent});return result;}
 async function dispatch(ref){
   try{
     let job=await readJob(ref);if(!job||!ACTIVE.has(job.status))return;
@@ -70,7 +70,7 @@ async function dispatch(ref){
     job=await readJob(ref);if(!job||!ACTIVE.has(job.status)){await support.release(tab.id,ref.requestId);return;}
     await inject(tab.id,job.provider);
     job=await supportedJob(ref);if(!job){await support.release(tab.id,ref.requestId);return;}
-    const preparation=await pageMessage(tab.id,{type:'YZ_PREPARE',provider:job.provider});
+    const preparation=await pageMessage(tab.id,{type:'YZ_PREPARE',provider:job.provider,prompt:job.prompt});
     await workspaces.validateTab(ref.sessionId,await chrome.tabs.get(tab.id));
     if(!sameConversation(job.provider,preparation.url,(await loadSession(ref.sessionId)).bindings[job.provider].url))throw new Error('准备发送时网页已切换对话，已取消发送。请点“原网页”核对。');
     await updateJob(ref,j=>{if(ACTIVE.has(j.status)){j.baseline=preparation.baseline;j.url=preparation.url;j.status='sending';j.phase='prepared';}});
@@ -79,7 +79,10 @@ async function dispatch(ref){
     await updateJob(ref,j=>{if(ACTIVE.has(j.status))j.phase='attempted';});
     job=await supportedJob(ref);if(!job){await support.release(tab.id,ref.requestId);return;}
     await pageMessage(tab.id,{type:'YZ_SEND',provider:job.provider,requestId:job.requestId,prompt:job.prompt,baseline:job.baseline});
-  }catch(error){await updateJob(ref,j=>{if(ACTIVE.has(j.status)){j.status=j.phase==='attempted'?'attention':'error';j.error=error.message;j.updatedAt=Date.now();}});await releaseSupport(ref);}
+  }catch(error){await updateJob(ref,j=>{if(ACTIVE.has(j.status)){
+    // The page reports a failure before its Send click as definitely not sent, so a retry cannot duplicate it.
+    if(error.notSent===true)j.phase='not_sent';
+    j.status=j.phase==='attempted'?'attention':'error';j.error=error.message;j.updatedAt=Date.now();}});await releaseSupport(ref);}
 }
 async function locateEvent(event,sender){
   if(!sender.tab||sender.frameId!==0)return false;
@@ -134,7 +137,7 @@ async function command(message){
     }
     case 'stop':{const s=await loadSession(message.sessionId),r=s.rounds.find(r=>r.id===message.roundId);if(!r)throw new Error('轮次不存在。');await Promise.all(r.jobs.filter(j=>ACTIVE.has(j.status)).map(j=>stopJob({sessionId:s.id,roundId:r.id,jobId:j.id})));await alarm();return state();}
     case 'job':{
-      const ref={sessionId:message.sessionId,roundId:message.roundId,jobId:message.jobId},job=await readJob(ref);if(!job)throw new Error('回答不存在。');
+      const ref={sessionId:message.sessionId,roundId:message.roundId,jobId:message.jobId},job=await readJob(ref);if(!job)throw new Error('回答不存在。');let forceable=null;
       ref.requestId=job.requestId;
       if(['retry','reread'].includes(message.operation)){
         const s=await loadSession(ref.sessionId);
@@ -149,11 +152,12 @@ async function command(message){
         const requestId=await updateJob(ref,(j,s)=>{if(s.rounds.at(-1)?.id!==ref.roundId||ACTIVE.has(j.status))throw new Error('该回答状态已变化，请刷新后重试。');if(['done','skipped'].includes(j.status))throw new Error('该轮已经结束，请在新一轮继续提问。');j.requestId=id();j.sequence=0;j.status='queued';j.phase='not_sent';j.text='';j.format='plain';j.baseline=null;j.anchor=null;j.url='';j.error='';j.updatedAt=Date.now();return j.requestId;});if(!requestId)throw new Error('该回答状态已变化，请刷新后重试。');await alarm();await dispatch({...ref,requestId});
       }else if(message.operation==='reread'){
         if(ACTIVE.has(job.status))throw new Error('请先停止该成员的自动读取。');
-        if(!job.baseline||job.phase!=='attempted')throw new Error('本轮没有已发送的回答锚点，请检查原网页后重试发送。');
-        const tab=await connection(ref.sessionId,job.provider,{verifyConversation:true,rereadJob:job});await waitForTab(tab.id);
+        // Without force the page must prove the latest question is this round's; force follows the user's confirmation.
+        const force=message.force===true;
+        const tab=await connection(ref.sessionId,job.provider,{verifyConversation:!force,rereadJob:job});await waitForTab(tab.id);
         const requestId=id();const claimed=await updateJob(ref,(j,s)=>{if(s.rounds.at(-1)?.id!==ref.roundId||ACTIVE.has(j.status))throw new Error('该回答状态已变化，请刷新后重试。');j.requestId=requestId;j.sequence=0;j.status='sent';j.tabId=tab.id;j.error='';j.updatedAt=Date.now();return true;});if(!claimed)throw new Error('该回答状态已变化，请刷新后重试。');
-        try{await support.acquire(tab.id,requestId,job.provider);if(!await supportedJob({...ref,requestId})){await support.release(tab.id,requestId);return state();}await inject(tab.id,job.provider);if(!await supportedJob({...ref,requestId})){await support.release(tab.id,requestId);return state();}await pageMessage(tab.id,{type:'YZ_REREAD',provider:job.provider,requestId,baseline:job.baseline,url:job.url,prompt:job.prompt,anchor:job.anchor});}catch(error){await updateJob({...ref,requestId},j=>{if(ACTIVE.has(j.status)){j.status='attention';j.error=error.message;}});await releaseSupport({...ref,requestId});}
-      }else throw new Error('未知回答操作。');await alarm();return state();
+        try{await support.acquire(tab.id,requestId,job.provider);if(!await supportedJob({...ref,requestId})){await support.release(tab.id,requestId);return state();}await inject(tab.id,job.provider);if(!await supportedJob({...ref,requestId})){await support.release(tab.id,requestId);return state();}await pageMessage(tab.id,{type:'YZ_REREAD',provider:job.provider,requestId,baseline:job.phase==='attempted'?job.baseline:null,url:job.url,prompt:job.prompt,anchor:force?null:job.anchor,force});}catch(error){await updateJob({...ref,requestId},j=>{if(ACTIVE.has(j.status)){j.status='attention';j.error=error.message;}});await releaseSupport({...ref,requestId});if(error.code==='NOT_OWNED'&&!force)forceable={jobId:job.id,provider:job.provider,question:error.question||''};}
+      }else throw new Error('未知回答操作。');await alarm();return {...await state(),forceable};
     }
     case 'delete':{const s=await loadSession(message.sessionId);if(busy(s))throw new Error('进行中的圆桌不能删除，请先停止。');if(await workspaces.owner(s.id))throw new Error('请先关闭这场圆桌的窗口，再从其他窗口删除历史。');if(!message.confirm)throw new Error('删除历史需要确认。');if(index.sessions.length===1)throw new Error('请先新建一场圆桌，再删除最后一条历史。');await run(async()=>{const next={...index,sessions:index.sessions.filter(m=>m.id!==s.id)};if(next.currentId===s.id)next.currentId=next.sessions[0].id;await chrome.storage.local.set({[INDEX]:next});index=next;await chrome.storage.local.remove([PREFIX+s.id,'arena.draft.'+s.id,'arena.reader.'+s.id]);sessions.delete(s.id);});return state();}
     default:throw new Error('未知圆桌操作。');

@@ -20,6 +20,8 @@
     return text;
   }
   const value=el=>el?.tagName==='TEXTAREA'?el.value:el?editableText(el):'';
+  // Rich editors may drop blank lines or trailing spaces when pasting; every other character must match in order.
+  const sameText=(a,b)=>{const lines=s=>normalized(s).split('\n').map(line=>line.replace(/\s+$/,'')).filter(Boolean).join('\n');return lines(a)===lines(b);};
   const normalized=s=>String(s).replace(/\r\n/g,'\n').replace(/\u00a0/g,' ').replace(/[\u200b\ufeff]/g,'').trim();
   function find(selectors,root=document){for(const selector of selectors){const found=[...root.querySelectorAll(selector)].find(visible);if(found)return found;}return null;}
   function answers(config){for(const selector of config.answer){const found=[...document.querySelectorAll(selector)].filter(el=>visible(el)&&normalized(el.textContent));if(found.length)return found;}return [];}
@@ -123,7 +125,7 @@
     if(!busy&&Date.now()-job.changedAt>=2200&&(job.sawBusy||completionMarker(job.config,candidate)))finish(job);
     else if(!busy&&Date.now()-job.changedAt>45000){emit(job,'attention',answerMarkdown(candidate,job.config),'已读到回答，但网页没有可靠的结束信号。请核对全文后确认完成，或重新提取。',{format:'markdown'});retire(job);}
   }
-  function finish(job){if(!followsUser(job.lastElement,users(job.config).at(-1))){job.lastElement=null;job.dirty=true;return;}const text=answerMarkdown(job.lastElement,job.config);if(!text){emit(job,'attention',job.lastText,'网页答案为空，未标记完成。');}else emit(job,'done',text,'',{format:'markdown'});retire(job);}
+  function finish(job){if(!followsUser(job.lastElement,users(job.config).at(-1))){job.lastElement=null;job.dirty=true;return;}const text=answerMarkdown(job.lastElement,job.config);if(!text){emit(job,'attention',job.lastText,'网页答案为空，未标记完成。');}else emit(job,'done',text,job.forced?'按你的确认读取了网页最新回答，未核对提问原文。':'',{format:'markdown'});retire(job);}
   function watch(job){
     for(const other of jobs.values())if(other!==job&&!other.cancelled)retire(other);
     const root=find(job.config.root)||document.body;
@@ -153,36 +155,39 @@
       }
     }
     await sleep(120);
-    if(normalized(value(handedOff(input,config,text)))!==normalized(text))throw new Error('网页输入内容与原文不一致，已取消发送，请检查原网页。');
+    const typed=normalized(value(handedOff(input,config,text)));
+    if(!sameText(typed,text)){const want=normalized(text);let i=0;while(i<want.length&&want[i]===typed[i])i++;const near=s=>JSON.stringify(s.slice(Math.max(0,i-12),i+12));throw new Error(`网页输入内容与原文不一致，已取消发送（原文 ${want.length} 字，网页 ${typed.length} 字，第 ${i+1} 字起不同：原文 ${near(want)}，网页 ${near(typed)}）。`);}
   }
   function loginRequired(config){if(!config.login)return false;if(config.login.url&&config.login.url.test(location.pathname))return true;return !!(config.login.selectors&&find(config.login.selectors));}
   // 豆包's home composer swaps a textarea for its rich editor (or back) and moves the text itself.
   // Only adapters that declare this follow it, only across element types, and only when the old
   // editor is gone or empty while the new one holds exactly this prompt. A same-type replacement
   // still cancels the send: the page's editor model may no longer hold the text.
-  function handedOff(input,config,prompt){if(!config.editorHandoff)return input;const current=find(config.input);if(current&&current!==input&&current.tagName!==input.tagName&&(!input.isConnected||!visible(input)||!normalized(value(input)))&&normalized(value(current))===normalized(prompt))return current;return input;}
+  function handedOff(input,config,prompt){if(!config.editorHandoff)return input;const current=find(config.input);if(current&&current!==input&&current.tagName!==input.tagName&&(!input.isConnected||!visible(input)||!normalized(value(input)))&&sameText(value(current),prompt))return current;return input;}
   function prepare(message){
     const config=globalThis.YuanzhuoAdapters[message.provider];if(!config)throw new Error('不支持该网页。');
     if(config.blocked&&find(config.blocked))throw new Error('网页要求人机验证，请先在原网页完成验证。');
     if(loginRequired(config))throw new Error('该网页尚未登录。请在原网页登录后再发送；未发送本轮提问。');
     assertNoAttachments(config);assertNoLimit(config);
     const input=find(config.input);if(!input)throw new Error('未找到可用输入框。请先打开网页完成登录或验证。');
-    if(normalized(value(input)))throw new Error('该网页有尚未发送的内容。请先处理原网页草稿，再重试。');
+    const leftover=normalized(value(input)),reuse=!!leftover&&!!message.prompt&&sameText(leftover,message.prompt);
+    if(leftover&&!reuse)throw new Error('该网页有尚未发送的内容。请先处理原网页草稿，再重试。');
     if(find(config.stop)||(config.busy&&find(config.busy)))throw new Error('该网页仍在生成其他回答，请等待结束。');
-    return {baseline:snapshot(config),url:cleanUrl()};
+    return {baseline:snapshot(config),url:cleanUrl(),reuse};
   }
   async function send(message){
     if(jobs.has(message.requestId))return {status:jobs.get(message.requestId).status,duplicate:true};
     const config=globalThis.YuanzhuoAdapters[message.provider];if(!config)throw new Error('不支持该网页。');
     assertNoAttachments(config);
     let input=find(config.input);if(!input)throw new Error('输入框已消失，请检查登录状态。');
-    if(normalized(value(input)))throw new Error('发送前发现网页已有草稿，未覆盖或发送。');
+    const reuse=!!normalized(value(input));
+    if(reuse&&!sameText(value(input),message.prompt))throw new Error('发送前发现网页已有草稿，未覆盖或发送。');
     if(cleanUrl()!==message.baseline.url)throw new Error('发送前网页对话已变化，已取消发送。');
     const job={...message,config,sequence:0,startedAt:Date.now(),changedAt:Date.now(),lastText:'',lastHash:'',expectedUrl:cleanUrl(),boundConversation:config.conversation.test(location.pathname),cancelled:false,dispatched:false,sawBusy:false,acknowledged:false,sending:true,status:'sending'};
     job.navigationOpen=!job.boundConversation||/\/chat\/local[_-]/.test(location.pathname);
     jobs.set(job.requestId,job);
     try{
-      await fill(input,message.prompt,config,()=>job.cancelled);if(job.cancelled)return {status:'stopped'};assertNoAttachments(config);
+      if(!reuse)await fill(input,message.prompt,config,()=>job.cancelled);if(job.cancelled)return {status:'stopped'};assertNoAttachments(config);
       let button=find(config.send);
       for(let i=0;i<8&&!available(button);i++){await sleep(160);if(job.cancelled)return {status:'stopped'};button=find(config.send);}
       if(!available(button)){retire(job);throw new Error('未找到可用发送按钮，文字保留在网页中，未自动按回车或重试。');}
@@ -191,29 +196,38 @@
       input=handedOff(input,config,message.prompt);
       if(!input.isConnected||find(config.input)!==input)throw new Error('发送前网页输入框已变化，已取消发送，请检查原网页。');
       if(cleanUrl()!==message.baseline.url)throw new Error('发送前网页对话已变化，已取消发送。');
-      if(normalized(value(input))!==normalized(message.prompt))throw new Error('发送前网页输入内容已变化，已取消发送，请检查原网页。');
+      if(!sameText(value(input),message.prompt))throw new Error('发送前网页输入内容已变化，已取消发送，请检查原网页。');
       job.dispatched=true;watch(job);button.click();job.sending=false;
       emit(job,'unconfirmed','', '已点击发送，正在核对网页响应；不要重复发送。');
       await sleep(450);inspect(job,true);
       return {status:job.status,phase:'attempted'};
-    }catch(error){retire(job);throw error;}
+    }catch(error){error.notSent=!job.dispatched;retire(job);throw error;}
   }
   function reread(message){
     if(jobs.has(message.requestId))return {status:jobs.get(message.requestId).status,duplicate:true};
     const config=globalThis.YuanzhuoAdapters[message.provider];
-    if(!config||!message.baseline)throw new Error('缺少本轮回答锚点，无法安全重新提取。');
-    if(message.url&&cleanUrl()!==message.url){
+    if(!config)throw new Error('不支持该网页。');
+    if(!message.baseline&&!message.force)throw Object.assign(new Error('本轮没有发送记录，需要你确认后再读取网页最新回答。'),{code:'NOT_OWNED',question:userText(users(config).at(-1),config).slice(0,120)});
+    if(message.url&&cleanUrl()!==message.url&&!message.force){
       const before=new URL(message.url),finalizing=message.provider==='doubao'&&/^block_[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(message.anchor?.key||'')&&message.anchor?.textHash&&before.origin===location.origin&&/^\/chat\/local[_-][^/]+\/?$/.test(before.pathname)&&/^\/chat\/\d+\/?$/.test(location.pathname);
       if(config.conversation.test(before.pathname)&&!finalizing)throw new Error('原网页已切换对话，请先回到本轮原网页。');
     }
     const job={...message,config,sequence:0,startedAt:Date.now(),changedAt:Date.now(),lastText:'',lastHash:'',expectedUrl:cleanUrl(),boundConversation:config.conversation.test(location.pathname),cancelled:false,dispatched:true,sawBusy:false,acknowledged:true,sending:false,status:'sent'};
-    if(!ownsUser(job,users(config)))throw new Error('网页最新提问不属于本轮，无法安全重新提取。请保留原回答并在圆桌中新开一轮。');
+    const userNodes=users(config),latestUser=userNodes.at(-1);
+    if(message.force){
+      // The user saw this question and chose it (AI-Arena's manual extraction). Anchor on it, keep watching until it finishes.
+      if(!latestUser)throw new Error('网页里还没有提问，无法读取回答。');
+      job.anchor={userCount:userNodes.length,textHash:hash(userText(latestUser,config)),key:userKey(latestUser,config),messageId:config.userIdAttribute?latestUser.querySelector('['+config.userIdAttribute+']')?.getAttribute(config.userIdAttribute):null};
+      job.baseline=job.baseline||{count:0,lastHash:'',userCount:0,userKey:null,url:cleanUrl()};job.forced=true;
+    }else if(!ownsUser(job,userNodes))throw Object.assign(new Error('网页最新提问不属于本轮（与本轮原文对不上），无法自动确认这是本轮的回答。'),{code:'NOT_OWNED',question:userText(latestUser,config).slice(0,120)});
     jobs.set(job.requestId,job);watch(job);inspect(job,true);return {status:job.status};
   }
   function stop(message){const job=jobs.get(message.requestId);if(job&&!job.cancelled){const button=message.stopGeneration?find(job.config.stop):null;job.status='stopped';retire(job);if(available(button)){button.click();return {stopped:true,pageStopped:true};}}else if(!job){retire({requestId:message.requestId,status:'stopped',sequence:0});}return {stopped:true,pageStopped:false};}
   chrome.runtime.onMessage.addListener((message,sender,respond)=>{
     if(sender.id!==chrome.runtime.id||!message.type?.startsWith('YZ_'))return false;
-    (async()=>{switch(message.type){case 'YZ_PING':return {ready:true,diagnostics};case 'YZ_PREPARE':return prepare(message);case 'YZ_SEND':return send(message);case 'YZ_REREAD':return reread(message);case 'YZ_STOP':return stop(message);case 'YZ_STATUS':{const job=jobs.get(message.requestId);return {known:!!job,status:job?.status,active:!!job&&!job.cancelled,sequence:job?.sequence||0};}default:throw new Error('未知网页操作。');}})().then(result=>respond({ok:true,...result}),error=>respond({ok:false,error:error.message}));return true;
+    (async()=>{switch(message.type){case 'YZ_PING':return {ready:true,diagnostics};case 'YZ_PREPARE':return prepare(message);case 'YZ_SEND':return send(message);case 'YZ_REREAD':return reread(message);case 'YZ_STOP':return stop(message);case 'YZ_STATUS':{const job=jobs.get(message.requestId);return {known:!!job,status:job?.status,active:!!job&&!job.cancelled,sequence:job?.sequence||0};}default:throw new Error('未知网页操作。');}})().then(result=>respond({ok:true,...result}),error=>respond({ok:false,error:error.message,code:error.code,question:error.question,
+      // Send errors raised before the click (all but the post-click path) mean nothing reached the site.
+      notSent:message.type==='YZ_SEND'?error.notSent??true:undefined}));return true;
   });
   addEventListener('pagehide',()=>{for(const job of jobs.values()){cleanup(job);job.cancelled=true;}});
   globalThis.__yuanzhuoLite={diagnostics};

@@ -145,7 +145,8 @@ globalThis.YuanzhuoAdapters = {
     root:['main','[role="main"]','[class*="message-list"]'],
     blocked:['iframe[src*="verifycenter/captcha"]'],
     login:{selectors:['[data-testid="to_login_button"]']},
-    unsupported:['[data-feishu-office-current-doc-old-card]'],
+    // Document / artifact cards keep the real content outside the chat body (2026-09-24: artifact_block).
+    unsupported:['[data-feishu-office-current-doc-old-card]','[data-plugin-identifier*="artifact_block"]','[data-office-artifact-scale-container]','[data-assembly-preview-card]'],
     conversation:/\/chat\/[^/?]+/
   }
 };
