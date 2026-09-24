@@ -100,6 +100,7 @@
       else if(hadAnchor||job.boundConversation){emit(job,'attention',job.lastText,'网页已切换到其他对话，已停止读取，防止混入别的回答。');retire(job);return;}
     }
     const busy=!!find(job.config.stop)||!!(job.config.busy&&find(job.config.busy));job.sawBusy ||= busy;
+    if(busy&&job.lastElement&&job.lastText&&Date.now()-job.changedAt>105000){emit(job,'attention',answerMarkdown(job.lastElement,job.config),'网页仍显示正在生成，但回答已超过 105 秒没有变化。请核对原网页，写完后点“确认已完成”；不会自动重发。',{format:'markdown'});retire(job);return;}
     if(Date.now()-job.startedAt>10*60*1000){emit(job,'attention',job.lastText,'等待超过 10 分钟，已停止自动读取。可打开网页查看，再重新提取。');retire(job);return;}
     if(!owns&&!job.acknowledged){const notice=limitNotice(job.config);if(notice){emit(job,'attention',job.lastText,'已点击发送，但网页提示额度已用完（'+notice+'），提问未被接受；不会自动重发。');retire(job);return;}}
     if(!owns){if(Date.now()-job.startedAt>45000){emit(job,'attention',job.lastText,'无法确认网页中本轮提问的位置，请打开原网页核对；不会自动重发。');retire(job);}return;}
@@ -164,8 +165,9 @@
   // editor is gone or empty while the new one holds exactly this prompt. A same-type replacement
   // still cancels the send: the page's editor model may no longer hold the text.
   function handedOff(input,config,prompt){if(!config.editorHandoff)return input;const current=find(config.input);if(current&&current!==input&&current.tagName!==input.tagName&&(!input.isConnected||!visible(input)||!normalized(value(input)))&&sameText(value(current),prompt))return current;return input;}
-  function prepare(message){
+  async function prepare(message){
     const config=globalThis.YuanzhuoAdapters[message.provider];if(!config)throw new Error('不支持该网页。');
+    for(let i=0;i<50&&(find(config.stop)||(config.busy&&find(config.busy)));i++)await sleep(300);
     if(config.blocked&&find(config.blocked))throw new Error('网页要求人机验证，请先在原网页完成验证。');
     if(loginRequired(config))throw new Error('该网页尚未登录。请在原网页登录后再发送；未发送本轮提问。');
     assertNoAttachments(config);assertNoLimit(config);

@@ -4,7 +4,8 @@ export function createWorkspaces(chrome, {loadSession, createSession, mutate, ge
   const key='arena.windows'; let owners={}, queue=Promise.resolve(),openQueue=Promise.resolve();
   const ready=chrome.storage.session.get(key).then(data=>{owners=data[key]||{};});
   const serial=fn=>{const result=queue.then(fn);queue=result.catch(()=>{});return result;};
-  const persist=async next=>{await chrome.storage.session.set({[key]:next});owners=next;};
+  // Session storage is cleared when the extension reloads; the local mirror lets an update reopen main pages.
+  const persist=async next=>{await chrome.storage.session.set({[key]:next});owners=next;try{await chrome.storage.local.set({[key+'.mirror']:next});}catch(error){console.info('[AI圆桌lite] 窗口归属备份失败，更新后需手动打开记录',error.message);}};
   const mainUrl=id=>chrome.runtime.getURL('main.html')+'?session='+encodeURIComponent(id);
   async function prune(){
     const next={...owners};
@@ -54,7 +55,9 @@ export function createWorkspaces(chrome, {loadSession, createSession, mutate, ge
       // parameters (Kimi ?chat_enter_method=...), so compare origin and path only.
       if(Object.keys(session.bindings||{}).length)await mutate(sessionId,s=>{
         for(const [p,b] of Object.entries(s.bindings)){
-          const tab=tabs.find(t=>providerFor(t.url||t.pendingUrl)===p&&cleanUrl(t.url||t.pendingUrl)===cleanUrl(b.url));
+          // Prefer the bound tab itself (still valid after an extension update); several tabs can share a landing URL.
+          const matches=t=>providerFor(t.url||t.pendingUrl)===p&&cleanUrl(t.url||t.pendingUrl)===cleanUrl(b.url);
+          const tab=tabs.find(t=>t.id===b.tabId&&matches(t))||tabs.find(matches);
           s.bindings[p]=tab?{tabId:tab.id,url:b.url}:{url:b.url};
         }
       });
@@ -88,5 +91,16 @@ export function createWorkspaces(chrome, {loadSession, createSession, mutate, ge
   async function requireWindow(sessionId){const windowId=await owner(sessionId);if(!windowId)throw new Error('圆桌窗口已关闭或尚未绑定，已取消网页操作。请从历史列表重新打开。');await chrome.windows.get(windowId);return windowId;}
   async function validateTab(sessionId,tab){const windowId=await requireWindow(sessionId);if(tab.windowId!==windowId)throw new Error('成员标签页已移到其他窗口。请移回本圆桌窗口，或点“连接成员网页”重新连接。');}
   async function ownerForWindow(windowId){await ready;await queue;return owners[windowId]||null;}
-  return {ready,claim,owner,ownerForWindow,requireWindow,assertOwner,main,forget,validateTab};
+  // After an extension update Chrome closes main pages but keeps windows and member tabs (same IDs).
+  async function restoreAfterReload(){
+    await ready;const mirror=(await chrome.storage.local.get(key+'.mirror'))[key+'.mirror']||{};const reopened=[];
+    for(const [win,sessionId] of Object.entries(mirror)){
+      const windowId=Number(win);try{await chrome.windows.get(windowId);await loadSession(sessionId);}catch{continue;}
+      try{await claim(windowId,sessionId);}catch(error){console.info('[AI圆桌lite] 更新后未恢复窗口',windowId,error.message);continue;}
+      const tabs=await chrome.tabs.query({windowId});if(!tabs.some(t=>(t.url||t.pendingUrl||'').startsWith(chrome.runtime.getURL('main.html'))))await chrome.tabs.create({windowId,url:mainUrl(sessionId),active:false});
+      reopened.push(windowId);
+    }
+    return reopened;
+  }
+  return {ready,claim,owner,ownerForWindow,requireWindow,assertOwner,main,forget,validateTab,restoreAfterReload};
 }

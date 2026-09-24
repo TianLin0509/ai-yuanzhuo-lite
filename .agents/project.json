@@ -7,12 +7,13 @@
   "testEnv": {"PYTHONUTF8": "1", "PYTHONDONTWRITEBYTECODE": "1"},
   "versionFiles": [],
   "versionBump": [],
-  "afterMerge": [],
+  "afterMerge": [["node", "scripts/install-local.mjs"]],
   "contracts": {"author": ".agents/AUTHOR.md", "merger": ".agents/MERGER.md"},
   "worktreeRoot": "../ai-yuanzhuo-lite-worktrees",
   "worktreeHint": "Each task installs its own npm ci dependencies. Read .agents/TESTING.md. No dependency junctions.",
   "notes": [
     "Explicit releases only; no version bump, remote push, or publication on ordinary merges.",
+    "After each local merge, afterMerge installs dist into C:/VibeData/Extensions/AI-Yuanzhuo-Lite, the folder the user loads once; the extension then offers an in-place update.",
     "Chrome MV3, one roundtable per window, main reading Tab with A/B/C views (A default), operations sidepanel; 2–3 of DeepSeek, Kimi, Doubao, Qwen, Yuanbao, ChatGPT, Claude, Gemini and Grok.",
     "Fixture browsers are isolated. Real account login and live site tests are separate from offline merge gates.",
     "User-approved debugger wake/focus support is limited to active request tabs and released afterwards. No MAIN world patches, DNR, PPT, token dashboards, silent truncation, or automatic uncertain resend."

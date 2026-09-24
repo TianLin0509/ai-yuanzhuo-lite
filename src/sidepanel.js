@@ -27,9 +27,11 @@ async function refresh(){
     if(changed){readerKey='arena.reader.'+model.session.id;const data=await chrome.storage.local.get(readerKey);reader={roundId:null,provider:'deepseek',pair:['deepseek','kimi'],expanded:[],...data[readerKey]};viewSignature='';if(main)history.replaceState(null,'','main.html?session='+encodeURIComponent(model.session.id));}
     if(!model.session.rounds.some(r=>r.id===reader.roundId))reader.roundId=latest()?.id||null;
     if(!pendingDrafts)await recoverDraft();const acknowledged=confirmedDrafts.get(model.session.id);if(acknowledged&&(acknowledged.revision||0)>(model.draft.revision||0))model.draft=acknowledged;
-    document.title=model.session.title+' · AI圆桌lite';renderController();if(main)renderMain();if(model.supportWarning)error(model.supportWarning);
+    document.title=model.session.title+' · AI圆桌lite';renderUpdate();renderController();if(main)renderMain();if(model.supportWarning)error(model.supportWarning);
   }catch(e){error(e.message);}finally{refreshing=false;if(refreshAgain){refreshAgain=false;scheduleRefresh();}}
 }
+// A newer build in the installed folder: offer an in-place reload (history and windows are kept).
+function renderUpdate(){const b=$('#update');if(!b)return;const available=model.build?.available;b.hidden=!available;if(available){b.textContent='更新到新版本';b.title=`当前 ${model.build.running}，可更新到 ${available}。本轮进行中时不能更新。`;b.disabled=busy(model.session);}}
 function persistReader(){chrome.storage.local.set({[readerKey]:reader}).catch(e=>error('阅读位置保存失败：'+e.message));}
 const draftBackupKey=()=> 'arena.pending-draft.'+model.session.id;
 async function recoverDraft(){
@@ -135,6 +137,7 @@ if(main){
   $('#reader').addEventListener('click',async e=>{const b=e.target.closest('button');if(!b)return;if(b.dataset.ai){reader.provider=b.dataset.ai;persistReader();renderMain();return;}const r=selected(),j=r?.jobs.find(j=>j.id===b.dataset.job);if(!j)return;if(b.dataset.read==='copy')copy(j.text);else if(b.dataset.read==='open')act('open-answer',{roundId:r.id,jobId:j.id});else if(b.dataset.read==='quote'){try{await draftQueue;if(await act('quote',{roundId:r.id,jobId:j.id}))notice('已将完整原文引用到下一轮草稿。');}catch(e){error(e.message);}}});
   $('#new').onclick=()=>act('new');$('#history').onclick=historyList;$('#export').onclick=()=>download();$('#open-sidepanel').onclick=()=>chrome.sidePanel.open({windowId}).catch(e=>error('侧栏打开失败：'+e.message));
 }else $('#open-main').onclick=()=>act('main');
+$('#update').onclick=async()=>{const r=await act('update');if(r?.reloading)notice('正在更新，稍后会自动重新打开圆桌记录。');};
 async function panelVisibility(){if(!main)return;const data=await chrome.storage.session.get('arena.panel.'+windowId),open=!!data['arena.panel.'+windowId];$('#dock').hidden=open;$('#panel-active').hidden=!open;if(!open&&model)scheduleRefresh();}
 chrome.storage.onChanged.addListener((changes,area)=>{if(area==='session'&&changes['arena.panel.'+windowId])panelVisibility().catch(e=>error(e.message));if(area!=='local')return;const draft=changes['arena.draft.'+model?.session.id]?.newValue;if(draft&&model){const known=confirmedDrafts.get(model.session.id);if(!known||(draft.revision||0)>=(known.revision||0)){confirmedDrafts.set(model.session.id,draft);if(!pendingDrafts){model.draft=draft;renderController();}}}if(Object.keys(changes).some(k=>k==='arena.preferences'||k==='arena.index'||k==='arena.session.'+model?.session.id))scheduleRefresh();});
 function connectPanel(){port=chrome.runtime.connect({name:'arena-panel:'+windowId});port.postMessage({visible:!document.hidden});port.onDisconnect.addListener(()=>{setTimeout(()=>{try{connectPanel();scheduleRefresh();}catch(e){error('侧栏重新连接失败：'+e.message);}},300);});}

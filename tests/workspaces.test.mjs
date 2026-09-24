@@ -55,3 +55,25 @@ test('Restart rebinding ignores site query parameters but never adopts a differe
   assert.equal(h.first.bindings.kimi.tabId,21);assert.equal(h.first.bindings.kimi.url,conversation);
   assert.equal(h.first.bindings.deepseek.tabId,undefined);
 });
+
+test('An extension update reopens each owned main page in its original window and keeps member bindings',async()=>{
+  const {createWorkspaces:make}=await import('../src/workspaces.js');
+  const first=newSession([...DEFAULT_MEMBERS]),second=newSession([...DEFAULT_MEMBERS]),sessions=new Map([[first.id,first],[second.id,second]]);
+  const session={},local={},windows=new Map([[1,{id:1}],[2,{id:2}]]),tabs=new Map([[4,{id:4,windowId:1,url:PROVIDERS.kimi.url}],[5,{id:5,windowId:1,url:PROVIDERS.kimi.url}]]);let nextTab=10;
+  const area=store=>({get:async key=>({[key]:store[key]}),set:async value=>Object.assign(store,structuredClone(value))});
+  const chrome={runtime:{getURL:p=>'chrome-extension://test/'+p},storage:{session:area(session),local:area(local)},windows:{get:async id=>{if(!windows.has(id))throw Error('No window with id: '+id);return windows.get(id);}},tabs:{query:async({windowId})=>[...tabs.values()].filter(t=>t.windowId===windowId),create:async({windowId,url,active})=>{const t={id:nextTab++,windowId,url,active};tabs.set(t.id,t);return t;},get:async id=>tabs.get(id)}};
+  const deps={loadSession:async id=>{if(!sessions.has(id))throw Error('session absent');return sessions.get(id);},createSession:async()=>{throw Error('must not create');},mutate:async(id,fn)=>fn(sessions.get(id)),getIndex:()=>({currentId:first.id,sessions:[...sessions.values()].map(s=>({id:s.id}))}),providers:PROVIDERS,providerFor};
+  // Another Kimi tab on the same landing page sits earlier in the window; the binding must stay on tab 5.
+  first.bindings={kimi:{tabId:5,url:PROVIDERS.kimi.url}};
+  const before=make(chrome,deps);assert.equal(await before.claim(1,first.id),first.id);assert.equal(await before.claim(2,second.id),second.id);
+  // Reload: session storage and main pages are gone; windows, member tabs and the local mirror remain.
+  for(const k of Object.keys(session))delete session[k];windows.delete(2);
+  const after=make(chrome,deps);
+  assert.deepEqual(await after.restoreAfterReload(),[1]);
+  assert.equal(await after.ownerForWindow(1),first.id);assert.equal(await after.ownerForWindow(2),null);
+  const reopened=[...tabs.values()].filter(t=>t.url.startsWith('chrome-extension://test/main.html'));
+  assert.deepEqual(reopened.map(t=>[t.windowId,t.url,t.active]),[[1,'chrome-extension://test/main.html?session='+encodeURIComponent(first.id),false]]);
+  assert.equal(first.bindings.kimi.tabId,5);
+  // Running it again does not open a second main page.
+  await after.restoreAfterReload();assert.equal([...tabs.values()].filter(t=>t.url.startsWith('chrome-extension://test/main.html')).length,1);
+});
