@@ -12,19 +12,24 @@
     if(node.nodeType===Node.TEXT_NODE)return node.textContent;
     if(node.nodeType!==Node.ELEMENT_NODE)return '';
     if(node.tagName==='BR')return '\n';
+    // Placeholders rendered inside the editor (Slate) are not user text.
+    // Slate marks an empty line with a zero-width span holding a <br>; the line break itself comes from the block.
+    if(node.getAttribute('contenteditable')==='false'||node.hasAttribute('data-slate-placeholder')||node.hasAttribute('data-slate-zero-width'))return '';
     const children=[...node.childNodes];let text='';
     for(let i=0;i<children.length;i++){const child=children[i],block=child.nodeType===Node.ELEMENT_NODE&&['P','DIV'].includes(child.tagName);if(i&&block)text+='\n';text+=block&&child.childNodes.length===1&&child.firstChild.nodeName==='BR'?'':editableText(child);}
     return text;
   }
   const value=el=>el?.tagName==='TEXTAREA'?el.value:el?editableText(el):'';
-  const normalized=s=>String(s).replace(/\r\n/g,'\n').replace(/\u00a0/g,' ').trim();
+  const normalized=s=>String(s).replace(/\r\n/g,'\n').replace(/\u00a0/g,' ').replace(/[\u200b\ufeff]/g,'').trim();
   function find(selectors,root=document){for(const selector of selectors){const found=[...root.querySelectorAll(selector)].find(visible);if(found)return found;}return null;}
   function answers(config){for(const selector of config.answer){const found=[...document.querySelectorAll(selector)].filter(el=>visible(el)&&normalized(el.textContent));if(found.length)return found;}return [];}
   function users(config){for(const selector of config.user){const found=[...document.querySelectorAll(selector)].filter(visible);if(found.length)return found;}return [];}
   const bodyNodes=(element,config)=>!element?[]:config.body&&!element.matches('[data-role="assistant"]')?[...element.querySelectorAll(config.body)]:[element];
-  const answerText=(element,config)=>bodyNodes(element,config).map(node=>node.textContent).join('\n\n');
+  const answerText=(element,config)=>bodyNodes(element,config).map(node=>visibleText(node,config)).join('\n\n');
+  // Thinking panels, citation chips and recommendation cards are excluded from the answer text.
+  function visibleText(node,config){if(!config.exclude)return node.textContent;const copy=node.cloneNode(true);copy.querySelectorAll(config.exclude).forEach(el=>el.remove());return copy.textContent;}
   function answerMarkdown(element,config){
-    const lines=bodyNodes(element,config).map(markdown).join('\n\n').split('\n'),output=[];let fence=null,blank=false;
+    const lines=bodyNodes(element,config).map(node=>markdown(node,config)).join('\n\n').split('\n'),output=[];let fence=null,blank=false;
     for(const line of lines){const marker=line.match(/^\s*(`{3,}|~{3,})/);if(marker){if(!fence)fence=marker[1];else if(marker[1][0]===fence[0]&&marker[1].length>=fence.length)fence=null;}
       if(!fence&&!line.trim()){if(!blank)output.push('');blank=true;}else{output.push(line);blank=false;}}
     return output.join('\n').trim();
@@ -45,15 +50,16 @@
     if((key?key===job.baseline.userKey:nodes.length!==job.baseline.userCount+1)||!job.prompt||!promptLetters(text).includes(promptLetters(job.prompt)))return false;
     job.anchor={userCount:nodes.length,textHash:hash(text),key,messageId};return true;
   }
-  function markdown(node){
+  function markdown(node,config={}){
     if(node.nodeType===Node.TEXT_NODE)return node.textContent;
     if(node.nodeType!==Node.ELEMENT_NODE)return '';
-    const tag=node.tagName;
-    if(['SCRIPT','STYLE','BUTTON','SVG','NOSCRIPT'].includes(tag)||node.getAttribute('role')==='button'||node.getAttribute('aria-hidden')==='true'||node.matches('.segment-code-header,.icon-button,.kimi-tooltip'))return '';
-    if(tag==='PRE'||node.matches('.md-code-block,.custom-code-block-container')){const code=node.querySelector('pre code,code,pre')||node;const language=(code.className||'').match(/language-([\w-]+)/)?.[1]||node.querySelector('.md-code-block-banner span')?.textContent?.trim()||'';const body=code.textContent;const fence='`'.repeat(Math.max(3,...(body.match(/`+/g)||[]).map(s=>s.length+1)));return '\n\n'+fence+language+'\n'+body+'\n'+fence+'\n\n';}
+    const tag=node.tagName,md=child=>markdown(child,config);
+    if(['SCRIPT','STYLE','BUTTON','SVG','NOSCRIPT'].includes(tag)||node.getAttribute('role')==='button'||node.getAttribute('aria-hidden')==='true'||node.matches('.segment-code-header,.icon-button,.kimi-tooltip')||config.exclude&&node.matches(config.exclude))return '';
+    // Site code blocks carry a language label and buttons outside <pre>; read the label, fence the code.
+    if(tag==='PRE'||node.matches('.md-code-block,.custom-code-block-container')||config.code&&node.matches(config.code.block)){const code=node.querySelector('pre code,code,pre')||node;const language=(code.className||'').match(/language-([\w-]+)/)?.[1]||node.querySelector('.md-code-block-banner span')?.textContent?.trim()||(config.code&&node.querySelector(config.code.language)?.textContent?.trim().toLowerCase().replace(/\s+/g,'-'))||'';const body=visibleText(code,config).replace(/\n$/,'');const fence='`'.repeat(Math.max(3,...(body.match(/`+/g)||[]).map(s=>s.length+1)));return '\n\n'+fence+language+'\n'+body+'\n'+fence+'\n\n';}
     if(tag==='BR')return '\n';
     if(tag==='IMG')return node.getAttribute('alt')?'['+node.getAttribute('alt')+']':'';
-    const text=[...node.childNodes].map(markdown).join('');
+    const text=[...node.childNodes].map(md).join('');
     if(/^H[1-6]$/.test(tag))return '\n\n'+'#'.repeat(Number(tag[1]))+' '+text.trim()+'\n\n';
     if(tag==='CODE')return '`'+text+'`';
     if(tag==='STRONG'||tag==='B')return '**'+text+'**';
@@ -61,7 +67,7 @@
     if(tag==='LI')return '\n'+(node.parentElement?.tagName==='OL'?[...node.parentElement.children].indexOf(node)+1+'. ':'- ')+text.trim()+'\n';
     if(tag==='BLOCKQUOTE')return '\n\n'+text.trim().split('\n').map(line=>'> '+line).join('\n')+'\n\n';
     if(tag==='A'){const href=node.getAttribute('href')||'';return /^https?:\/\//i.test(href)?'['+text+']('+href.replaceAll(')','%29')+')':text;}
-    if(tag==='TR')return '\n| '+[...node.children].map(cell=>markdown(cell).trim().replaceAll('|','\\|')).join(' | ')+' |'+(node.parentElement?.tagName==='THEAD'?'\n| '+[...node.children].map(()=>'---').join(' | ')+' |':'');
+    if(tag==='TR')return '\n| '+[...node.children].map(cell=>md(cell).trim().replaceAll('|','\\|')).join(' | ')+' |'+(node.parentElement?.tagName==='THEAD'?'\n| '+[...node.children].map(()=>'---').join(' | ')+' |':'');
     return ['P','DIV','SECTION','ARTICLE','UL','OL','TABLE'].includes(tag)?'\n'+text+'\n':text;
   }
   function snapshot(config){const nodes=answers(config),last=nodes.at(-1),userNodes=users(config);return {count:nodes.length,lastHash:hash(answerText(last,config)),userCount:userNodes.length,userKey:config.userKeyAttribute?userNodes.at(-1)?.getAttribute(config.userKeyAttribute):null,url:cleanUrl()};}
@@ -75,11 +81,13 @@
   }
   function schedule(job,ms=3000){if(job.cancelled||job.timer)return;diagnostics.timers++;job.timer=setTimeout(()=>{diagnostics.timers--;job.timer=null;inspect(job);schedule(job);},ms);}
   function changed(job){job.dirty=true;if(job.cancelled||job.flushTimer)return;diagnostics.timers++;job.flushTimer=setTimeout(()=>{diagnostics.timers--;job.flushTimer=null;inspect(job);},900);}
-  function completionMarker(config,element){let root=element;for(let depth=0;root&&depth<4;depth++,root=root.parentElement){if(depth&&config.answer.some(selector=>root.querySelectorAll(selector).length>1))break;if(find(config.complete,root))return true;}return false;}
+  function completionMarker(config,element){if(element&&config.complete.some(selector=>element.matches(selector)))return true;let root=element;for(let depth=0;root&&depth<4;depth++,root=root.parentElement){if(depth&&config.answer.some(selector=>root.querySelectorAll(selector).length>1))break;if(find(config.complete,root))return true;}return false;}
   const followsUser=(element,user)=>!!element?.isConnected&&!!user?.isConnected&&!user.contains(element)&&!!(user.compareDocumentPosition(element)&Node.DOCUMENT_POSITION_FOLLOWING);
   function inspect(job,force=false){
     if(job.cancelled||!job.dispatched)return;
     if(job.config.blocked&&find(job.config.blocked)){emit(job,'attention',job.lastText,'网页要求人机验证。请在原网页完成后重新提取；不会自动重发。');retire(job);return;}
+    // Guest sessions may accept the prompt and then show a sign-up wall instead of an answer.
+    if(loginRequired(job.config)){emit(job,'attention',job.lastText,'网页要求登录后才继续回答，本轮没有收到完整回答。请在原网页登录后重试；不会自动重发。');retire(job);return;}
     const userNodes=users(job.config),hadAnchor=!!job.anchor,owns=ownsUser(job,userNodes);
     // Revalidate on every read, including after a SPA changes URL before replacing DOM.
     if(hadAnchor&&!owns){emit(job,'attention',job.lastText,'网页中的提问已变化，已停止读取，防止混入其他回答。');retire(job);return;}
@@ -145,9 +153,11 @@
     await sleep(120);
     if(normalized(value(input))!==normalized(text))throw new Error('网页输入内容与原文不一致，已取消发送，请检查原网页。');
   }
+  function loginRequired(config){if(!config.login)return false;if(config.login.url&&config.login.url.test(location.pathname))return true;return !!(config.login.selectors&&find(config.login.selectors));}
   function prepare(message){
     const config=globalThis.YuanzhuoAdapters[message.provider];if(!config)throw new Error('不支持该网页。');
     if(config.blocked&&find(config.blocked))throw new Error('网页要求人机验证，请先在原网页完成验证。');
+    if(loginRequired(config))throw new Error('该网页尚未登录。请在原网页登录后再发送；未发送本轮提问。');
     assertNoAttachments(config);assertNoLimit(config);
     const input=find(config.input);if(!input)throw new Error('未找到可用输入框。请先打开网页完成登录或验证。');
     if(normalized(value(input)))throw new Error('该网页有尚未发送的内容。请先处理原网页草稿，再重试。');

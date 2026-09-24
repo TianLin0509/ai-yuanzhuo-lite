@@ -1,6 +1,6 @@
 // Window ownership is browser-session state. Durable answers never depend on a tab ID.
-import {cleanUrl} from './core.js';
-export function createWorkspaces(chrome, {loadSession, createSession, mutate, getIndex, providers, providerFor}) {
+import {cleanUrl,DEFAULT_MEMBERS} from './core.js';
+export function createWorkspaces(chrome, {loadSession, createSession, mutate, getIndex, providers, defaultMembers, providerFor}) {
   const key='arena.windows'; let owners={}, queue=Promise.resolve(),openQueue=Promise.resolve();
   const ready=chrome.storage.session.get(key).then(data=>{owners=data[key]||{};});
   const serial=fn=>{const result=queue.then(fn);queue=result.catch(()=>{});return result;};
@@ -46,7 +46,7 @@ export function createWorkspaces(chrome, {loadSession, createSession, mutate, ge
         for(const binding of bindings){if(!Number.isInteger(binding.tabId)){belongs=false;continue;}try{const tab=await chrome.tabs.get(binding.tabId);if(tab.windowId!==windowId)belongs=false;}catch(e){if(!/No tab|Invalid tab/i.test(e.message))throw e;belongs=false;}}
         // Capacity must never lock users out of the history needed to free space.
         const closedHistory=getIndex().sessions?.find(s=>!Object.values(owners).includes(s.id));
-        sessionId=belongs?old.id:getIndex().sessions?.length>=30&&closedHistory?closedHistory.id:(await createSession(Object.keys(providers))).id;
+        sessionId=belongs?old.id:getIndex().sessions?.length>=30&&closedHistory?closedHistory.id:(await createSession([...(typeof defaultMembers==='function'?defaultMembers():defaultMembers||DEFAULT_MEMBERS)])).id;
       }
       const session=await loadSession(sessionId);
       // Browser restarts can reuse numeric tab IDs. Match saved conversation URLs

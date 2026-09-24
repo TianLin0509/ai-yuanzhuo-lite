@@ -1,8 +1,8 @@
-import {PROVIDERS,ACTIVE,id,newSession,makeRound,composePrompts,busy,providerFor,cleanUrl,acceptEvent} from './core.js';
+import {PROVIDERS,DEFAULT_MEMBERS,ACTIVE,id,newSession,validMembers,makeRound,composePrompts,busy,providerFor,cleanUrl,sameConversation,acceptEvent} from './core.js';
 import {createBackgroundSupport} from './background-support.js';
 import {createWorkspaces} from './workspaces.js';
 
-const INDEX='arena.index',PREFIX='arena.session.',ALARM='arena-active-recovery';
+const INDEX='arena.index',PREFIX='arena.session.',ALARM='arena-active-recovery',MEMBERS='arena.members';
 let index,queue=Promise.resolve(),supportWarning='';const sessions=new Map(),nativePanelState=new Map();
 const run=fn=>{const operation=queue.then(fn);queue=operation.catch(()=>{});return operation;};
 async function loadSession(sessionId){if(!sessions.has(sessionId)){const data=await chrome.storage.local.get(PREFIX+sessionId);if(!data[PREFIX+sessionId])throw new Error('会话不存在，请刷新历史列表。');sessions.set(sessionId,data[PREFIX+sessionId]);}return sessions.get(sessionId);}
@@ -10,17 +10,19 @@ async function save(session){session.updatedAt=Date.now();const next=structuredC
 async function mutate(sessionId,fn){return run(async()=>{const copy=structuredClone(await loadSession(sessionId));const result=fn(copy);await save(copy);return result;});}
 async function init(){
   const data=await chrome.storage.local.get(INDEX);index=data[INDEX];
-  if(!index){const session=newSession(Object.keys(PROVIDERS));index={schema:1,currentId:session.id,sessions:[]};await save(session);}
+  if(!index){const session=newSession([...DEFAULT_MEMBERS]);index={schema:1,currentId:session.id,sessions:[]};await save(session);}
   await chrome.sidePanel.setPanelBehavior({openPanelOnActionClick:true});
   const ephemeral=await chrome.storage.session.get(null),panelKeys=Object.keys(ephemeral).filter(k=>k.startsWith('arena.panel.'));
   const livePanels=chrome.runtime.getContexts?new Set((await chrome.runtime.getContexts({contextTypes:['SIDE_PANEL']})).map(c=>c.documentId)):new Set();
   for(const key of panelKeys){const windowId=Number(key.slice('arena.panel.'.length));if(chrome.sidePanel.onClosed&&livePanels.has(ephemeral['arena.panel-document.'+windowId]))nativePanelState.set(windowId,ephemeral[key]);else await chrome.storage.session.remove(key);}
 }
 const initialized=init();
+// The members last chosen by the user seed new roundtables; unknown or invalid saved sets fall back.
+let preferredMembers=[...DEFAULT_MEMBERS];const membersLoaded=chrome.storage.local.get(MEMBERS).then(data=>{if(validMembers(data[MEMBERS]))preferredMembers=data[MEMBERS];});
 async function createSession(members){return run(async()=>{if(index.sessions.length>=30)throw new Error('已保存 30 场圆桌。请先导出并删除旧记录。');const session=newSession(members);await save(session);return session;});}
-const workspaces=createWorkspaces(chrome,{loadSession,createSession,mutate,getIndex:()=>index,providers:PROVIDERS,providerFor});
+const workspaces=createWorkspaces(chrome,{loadSession,createSession,mutate,getIndex:()=>index,providers:PROVIDERS,defaultMembers:()=>preferredMembers,providerFor});
 const support=createBackgroundSupport(chrome,{onLost:async event=>{await initialized;await supportLost(event);},onError:error=>{supportWarning=error.message;console.error('[AI圆桌lite] 后台支持异常',error);}});
-const ready=Promise.all([initialized,support.ready,workspaces.ready]);
+const ready=Promise.all([initialized,support.ready,workspaces.ready,membersLoaded]);
 function findJob(session,roundId,jobId){return session.rounds.find(r=>r.id===roundId)?.jobs.find(j=>j.id===jobId);}
 async function updateJob(ref,fn){return mutate(ref.sessionId,s=>{const job=findJob(s,ref.roundId,ref.jobId);if(!job)throw new Error('本轮任务已不存在。');if(ref.requestId&&job.requestId!==ref.requestId)return null;return fn(job,s);});}
 async function readJob(ref){const job=findJob(await loadSession(ref.sessionId),ref.roundId,ref.jobId);return ref.requestId&&job?.requestId!==ref.requestId?null:job;}
@@ -50,7 +52,7 @@ async function connection(sessionId,provider,{focus=false,verifyConversation=fal
   if(binding?.tabId){try{tab=await chrome.tabs.get(binding.tabId);}catch(error){if(!/No tab|Invalid tab/i.test(error.message))throw error;}}
   if(tab)await workspaces.validateTab(sessionId,tab);
   if(tab&&providerFor(tab.url||tab.pendingUrl)!==provider)throw new Error(`${PROVIDERS[provider].name} 的标签页已离开对应网站，请重新连接。`);
-  if(tab&&binding?.url&&verifyConversation&&cleanUrl(tab.url||tab.pendingUrl)!==cleanUrl(binding.url)&&!provisionalRecovery(provider,binding,tab.url||tab.pendingUrl,rereadJob))throw new Error('该标签页已切换到其他对话。请点“原网页”回到本轮绑定的对话，再重试。');
+  if(tab&&binding?.url&&verifyConversation&&!sameConversation(provider,tab.url||tab.pendingUrl,binding.url)&&!provisionalRecovery(provider,binding,tab.url||tab.pendingUrl,rereadJob))throw new Error('该标签页已切换到其他对话。请点“原网页”回到本轮绑定的对话，再重试。');
   if(!tab){tab=await chrome.tabs.create({windowId:ownerWindow,url:binding?.url||PROVIDERS[provider].url,active:focus});await mutate(sessionId,s=>{s.bindings[provider]={tabId:tab.id,url:tab.url||tab.pendingUrl||PROVIDERS[provider].url};});}
   if(focus){await chrome.tabs.update(tab.id,{active:true});await chrome.windows.update(tab.windowId,{focused:true});}
   return tab;
@@ -70,7 +72,7 @@ async function dispatch(ref){
     job=await supportedJob(ref);if(!job){await support.release(tab.id,ref.requestId);return;}
     const preparation=await pageMessage(tab.id,{type:'YZ_PREPARE',provider:job.provider});
     await workspaces.validateTab(ref.sessionId,await chrome.tabs.get(tab.id));
-    if(cleanUrl(preparation.url)!==cleanUrl((await loadSession(ref.sessionId)).bindings[job.provider].url))throw new Error('准备发送时网页已切换对话，已取消发送。请点“原网页”核对。');
+    if(!sameConversation(job.provider,preparation.url,(await loadSession(ref.sessionId)).bindings[job.provider].url))throw new Error('准备发送时网页已切换对话，已取消发送。请点“原网页”核对。');
     await updateJob(ref,j=>{if(ACTIVE.has(j.status)){j.baseline=preparation.baseline;j.url=preparation.url;j.status='sending';j.phase='prepared';}});
     job=await supportedJob(ref);if(!job){await support.release(tab.id,ref.requestId);return;}
     // Persist the uncertain boundary BEFORE the page can click. A restart never blindly repeats SEND.
@@ -119,9 +121,9 @@ async function command(message){
     case 'quote':{await run(async()=>{const s=await loadSession(message.sessionId),r=s.rounds.find(r=>r.id===message.roundId),j=r?.jobs.find(j=>j.id===message.jobId);if(!j?.text)throw new Error('这份回答暂无可引用的正文。');const key='arena.draft.'+s.id,data=await chrome.storage.local.get(key),draft=data[key]||{},stamp=new Date(r.createdAt).toLocaleString('zh-CN',{hour12:false});await chrome.storage.local.set({[key]:{...draft,text:(draft.text||'')+`\n\n【引用 ${stamp} · ${PROVIDERS[j.provider].name}】\n${j.text}\n【引用结束】`,revision:Math.max(Date.now()*1000,(draft.revision||0)+1),writer:'quote'}});});return state();}
     case 'preview':{const s=await loadSession(message.sessionId);return {...await state(),prompts:composePrompts(message.kind,message.text,s,message.options),baseRoundId:s.rounds.at(-1)?.id||null};}
     case 'main':{const opened=await workspaces.main(message.sessionId);return {...await state(),opened};}
-    case 'new':{const session=await createSession(message.members||Object.keys(PROVIDERS));const opened=await workspaces.main(session.id);for(const provider of session.members)await connection(session.id,provider);return {...await state(),opened};}
+    case 'new':{const session=await createSession(message.members||[...preferredMembers]);const opened=await workspaces.main(session.id);for(const provider of session.members)await connection(session.id,provider);return {...await state(),opened};}
     case 'select':{await loadSession(message.sessionId);const opened=await workspaces.main(message.sessionId);const s=await loadSession(message.sessionId);for(const p of s.members)await connection(s.id,p);return {...await state(),opened};}
-    case 'members':{await mutate(message.sessionId,s=>{if(busy(s))throw new Error('请先等待或停止本轮，再更改成员。');newSession(message.members);s.members=message.members;});return state();}
+    case 'members':{await mutate(message.sessionId,s=>{if(busy(s))throw new Error('请先等待或停止本轮，再更改成员。');newSession(message.members);s.members=message.members;});preferredMembers=[...message.members];await chrome.storage.local.set({[MEMBERS]:preferredMembers});return state();}
     case 'connect':{const s=await loadSession(message.sessionId);for(const provider of s.members){const binding=s.bindings[provider],windowId=await workspaces.owner(s.id);if(binding?.tabId&&windowId){let tab;try{tab=await chrome.tabs.get(binding.tabId);}catch(e){if(!/No tab|Invalid tab/i.test(e.message))throw e;}if(tab&&(tab.windowId!==windowId||providerFor(tab.url||tab.pendingUrl)!==provider)){if(busy(s))throw new Error('请先停止本轮，再重新连接已移动的成员。');await mutate(s.id,copy=>{copy.bindings[provider]={url:binding.url};});}}await connection(s.id,provider);}return state();}
     case 'open-answer':{const s=await loadSession(message.sessionId),r=s.rounds.find(r=>r.id===message.roundId),j=r?.jobs.find(j=>j.id===message.jobId);if(!j?.url||providerFor(j.url)!==j.provider)throw new Error('这份记录尚无可核对的原网页地址。');const windowId=await workspaces.owner(s.id),tabs=await chrome.tabs.query(windowId?{windowId}:{});const tab=tabs.find(t=>cleanUrl(t.url)===cleanUrl(j.url));if(tab)await chrome.tabs.update(tab.id,{active:true});else await chrome.tabs.create({...(windowId?{windowId}:{}),url:j.url,active:true});return state();}
     case 'open':{if(!PROVIDERS[message.provider])throw new Error('未知成员。');const session=await loadSession(message.sessionId);const bound=session.bindings[message.provider];const tab=await connection(session.id,message.provider,{focus:true});if(bound?.url&&cleanUrl(tab.url)!==cleanUrl(bound.url))await chrome.tabs.update(tab.id,{url:bound.url});return state();}

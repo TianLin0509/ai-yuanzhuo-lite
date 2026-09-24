@@ -1,16 +1,35 @@
+// conversation: path of a saved chat. Other paths on the same site are blank "new chat" pages.
+// Must match the adapter of the same provider (tests/providers.test.mjs checks both).
 export const PROVIDERS = Object.freeze({
-  deepseek: {name:'DeepSeek', short:'DS', url:'https://chat.deepseek.com/', hosts:['chat.deepseek.com']},
-  kimi: {name:'Kimi', short:'K', url:'https://www.kimi.com/', hosts:['www.kimi.com','kimi.com','kimi.moonshot.cn']},
-  doubao: {name:'豆包', short:'豆', url:'https://www.doubao.com/chat/', hosts:['www.doubao.com']}
+  deepseek: {name:'DeepSeek', short:'DS', url:'https://chat.deepseek.com/', hosts:['chat.deepseek.com'], conversation:/\/a\/chat\/s\/[^/]+|\/chat\/[^/]+/},
+  kimi: {name:'Kimi', short:'K', url:'https://www.kimi.com/', hosts:['www.kimi.com','kimi.com','kimi.moonshot.cn'], conversation:/\/chat\/[^/]+/},
+  doubao: {name:'豆包', short:'豆', url:'https://www.doubao.com/chat/', hosts:['www.doubao.com'], conversation:/\/chat\/[^/?]+/},
+  qwen: {name:'千问', short:'千', url:'https://www.qianwen.com/', hosts:['www.qianwen.com'], conversation:/\/chat\/[^/]+/},
+  yuanbao: {name:'元宝', short:'元', url:'https://yuanbao.tencent.com/chat', hosts:['yuanbao.tencent.com'], conversation:/\/chat\/[^/]+\/[^/]+/},
+  chatgpt: {name:'ChatGPT', short:'GPT', url:'https://chatgpt.com/', hosts:['chatgpt.com'], conversation:/\/u?c\/[^/]+/, abroad:true},
+  claude: {name:'Claude', short:'C', url:'https://claude.ai/new', hosts:['claude.ai'], conversation:/\/chat\/[^/]+/, abroad:true},
+  gemini: {name:'Gemini', short:'G', url:'https://gemini.google.com/app', hosts:['gemini.google.com'], conversation:/\/app\/[^/]+/, abroad:true},
+  grok: {name:'Grok', short:'Gk', url:'https://grok.com/', hosts:['grok.com'], conversation:/\/c\/[^/]+/, abroad:true}
 });
+// First-run members; afterwards new roundtables reuse the members the user last chose.
+export const DEFAULT_MEMBERS = Object.freeze(['deepseek','kimi','doubao']);
+export const MAX_MEMBERS = 3;
+export function validMembers(members){return Array.isArray(members)&&members.length>=2&&members.length<=MAX_MEMBERS&&new Set(members).size===members.length&&members.every(k=>PROVIDERS[k]);}
 export const ACTIVE = new Set(['queued','preparing','sending','sent','streaming','unconfirmed']);
 export const LABELS = {queued:'准备连接',preparing:'检查网页',sending:'正在发送',sent:'等待回答',streaming:'正在回答',unconfirmed:'发送待确认',done:'已完成',attention:'需要确认',error:'需要处理',stopped:'已停止',skipped:'已跳过'};
 export const MAX_PROMPT = 120000;
 export function id(){return crypto.randomUUID();}
 export function providerFor(url){try{const host=new URL(url).hostname;return Object.keys(PROVIDERS).find(k=>PROVIDERS[k].hosts.includes(host))||null;}catch{return null;}}
 export function cleanUrl(url){try{const u=new URL(url);return u.origin+u.pathname;}catch{return '';}}
+// Sites redirect their landing page (e.g. 元宝 /chat → /chat/<agent>). Two blank pages hold no
+// conversation that could be mixed up, so they count as the same place; saved chats must match exactly.
+export function sameConversation(provider,a,b){
+  if(cleanUrl(a)&&cleanUrl(a)===cleanUrl(b))return true;
+  const pattern=PROVIDERS[provider]?.conversation;
+  try{const x=new URL(a),y=new URL(b);return !!pattern&&x.origin===y.origin&&PROVIDERS[provider].hosts.includes(x.hostname)&&!pattern.test(x.pathname)&&!pattern.test(y.pathname);}catch{return false;}
+}
 export function newSession(memberIds){
-  if(!Array.isArray(memberIds)||memberIds.length<2||memberIds.length>3||new Set(memberIds).size!==memberIds.length||memberIds.some(k=>!PROVIDERS[k]))throw new Error('请选择 2–3 位不同的成员。');
+  if(!validMembers(memberIds))throw new Error(`请选择 2–${MAX_MEMBERS} 位不同的成员。`);
   return {id:id(),title:'新的圆桌',createdAt:Date.now(),updatedAt:Date.now(),members:memberIds,bindings:{},rounds:[]};
 }
 export function busy(session){return session?.rounds.some(r=>r.jobs.some(j=>ACTIVE.has(j.status)))||false;}

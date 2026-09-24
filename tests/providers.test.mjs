@@ -1,0 +1,143 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import {chromium} from '../scripts/browser-config.mjs';
+import {PROVIDERS,DEFAULT_MEMBERS,MAX_MEMBERS,validMembers,sameConversation,newSession} from '../src/core.js';
+
+const source=name=>fs.readFileSync(new URL('../src/'+name,import.meta.url),'utf8');
+const adapters=(()=>{const g={};new Function('globalThis',source('adapters.js'))(g);return g.YuanzhuoAdapters;})();
+
+test('every provider has an adapter, a host permission and the same conversation rule',()=>{
+  const manifest=JSON.parse(source('manifest.json'));
+  for(const [id,p] of Object.entries(PROVIDERS)){
+    assert(adapters[id],id+' adapter');
+    assert.equal(String(adapters[id].conversation),String(p.conversation),id+' conversation rule must match core');
+    for(const host of p.hosts)assert(manifest.host_permissions.includes(`https://${host}/*`),id+' host permission '+host);
+    assert(p.hosts.includes(new URL(p.url).hostname),id+' start page belongs to its hosts');
+  }
+  assert.deepEqual(Object.keys(adapters).sort(),Object.keys(PROVIDERS).sort());
+});
+
+test('member sets are 2–3 distinct known providers; defaults stay valid',()=>{
+  assert.equal(MAX_MEMBERS,3);assert(validMembers([...DEFAULT_MEMBERS]));
+  assert(validMembers(['chatgpt','claude','gemini']));
+  for(const bad of [['chatgpt'],['kimi','kimi'],['deepseek','kimi','doubao','qwen'],['deepseek','nope'],null])assert.equal(validMembers(bad),false);
+  assert.throws(()=>newSession(['deepseek','kimi','doubao','qwen']),/2–3/);
+});
+
+test('blank landing pages are interchangeable; saved conversations must match exactly',()=>{
+  assert(sameConversation('yuanbao','https://yuanbao.tencent.com/chat','https://yuanbao.tencent.com/chat/naQivTmsDa'));
+  assert(!sameConversation('yuanbao','https://yuanbao.tencent.com/chat/naQivTmsDa','https://yuanbao.tencent.com/chat/naQivTmsDa/5b1c'));
+  assert(sameConversation('chatgpt','https://chatgpt.com/','https://chatgpt.com/?model=auto'));
+  assert(!sameConversation('chatgpt','https://chatgpt.com/c/1','https://chatgpt.com/c/2'));
+  assert(!sameConversation('chatgpt','https://chatgpt.com/uc/1','https://chatgpt.com/'));
+  assert(sameConversation('gemini','https://gemini.google.com/app','https://gemini.google.com/app/'));
+  assert(!sameConversation('gemini','https://gemini.google.com/app/abc','https://gemini.google.com/app'));
+  assert(!sameConversation('qwen','https://www.qianwen.com/','https://evil.example/'));
+  assert(sameConversation('doubao','https://www.doubao.com/chat/','https://www.doubao.com/chat/'));
+  assert(!sameConversation('doubao','https://www.doubao.com/chat/local_1','https://www.doubao.com/chat/'));
+});
+
+// Controlled pages mirror DOM shapes recorded on the live sites on 2026-09-23 (see
+// docs/20260923-more-providers-verification-claude.md). They prove adapter wiring and
+// extraction rules, never that a third-party site still matches today.
+const PAGES={
+  gemini:{
+    html:`<main><chat-window><div id="messages"></div>
+      <rich-textarea><div class="ql-editor textarea new-input-ui ql-blank" contenteditable="true" role="textbox" aria-label="Enter a prompt for Gemini"><p><br></p></div></rich-textarea>
+      <button aria-label="Upload &amp; tools"></button><button aria-label="Open mode picker, currently Flash-Lite"></button>
+      <button aria-label="Send message"></button><button aria-label="Stop response" hidden></button></chat-window></main>`,
+    setup:()=>{
+      const editor=document.querySelector('.ql-editor'),send=document.querySelector('[aria-label="Send message"]'),stop=document.querySelector('[aria-label="Stop response"]'),messages=document.querySelector('#messages');
+      // Quill keeps one <p> per line; an empty line is <p><br></p>.
+      const text=()=>[...editor.children].map(p=>p.textContent).join('\n');
+      editor.addEventListener('paste',e=>{e.preventDefault();editor.replaceChildren(...e.clipboardData.getData('text/plain').split('\n').map(line=>{const p=document.createElement('p');if(line)p.textContent=line;else p.append(document.createElement('br'));return p;}));});
+      send.onclick=()=>{
+        const sent=text();window.sent.push(sent);editor.innerHTML='<p><br></p>';send.hidden=true;stop.hidden=false;
+        const q=document.createElement('user-query');q.innerHTML='<span class="user-query-container"><div class="query-text gds-body-l"><h5 class="cdk-visually-hidden">You said</h5></div></span>';
+        q.querySelector('.query-text').append(...sent.split('\n').map(line=>{const p=document.createElement('p');p.className='query-text-line';p.textContent=line;return p;}));
+        messages.append(q);
+        const r=document.createElement('model-response');
+        r.innerHTML='<div class="response-container"><div class="model-response-label-announcer"><h6 class="cdk-visually-hidden">Gemini said</h6></div><model-response-content><structured-content-container class="model-response-text processing-state-visible"><message-content><div class="markdown markdown-main-panel md-content" aria-busy="true"><p>正在回答</p></div></message-content></structured-content-container></model-response-content><div class="response-footer gap"></div></div>';
+        messages.append(r);
+        setTimeout(()=>{
+          r.querySelector('.markdown').innerHTML='<p>回答：'+sent.split('\n')[0]+'</p><response-element class="no-md"><code-block><div class="code-block"><div class="code-block-decoration header-formatted"><span>Python</span><div class="buttons"><button aria-label="Copy code"></button></div></div><pre><code class="code-container formatted" data-test-id="code-content">print("CODE_OK")</code></pre></div></code-block></response-element><p>END_GEMINI</p>';
+          stop.hidden=true;
+          // Stop disappears before the body drops aria-busy; actions come last.
+          setTimeout(()=>{r.querySelector('.markdown').setAttribute('aria-busy','false');r.querySelector('.response-footer').classList.add('complete');const actions=document.createElement('message-actions');actions.innerHTML='<button aria-label="Redo"></button><button aria-label="Copy"></button>';r.append(actions);send.hidden=false;},1200);
+        },900);
+      };
+    },
+    prompt:'第一行 GEMINI\n\n  缩进保留 <x> & y',
+    expect:{text:['回答：第一行 GEMINI','```python\nprint("CODE_OK")\n```','END_GEMINI'],absent:['Gemini said','Python\n','正在回答']}
+  },
+  chatgpt:{
+    html:`<main><ol aria-label="Conversation" data-conversation-transcript id="transcript"></ol>
+      <form><textarea id="mobile-composer-prompt" name="prompt" placeholder="Ask ChatGPT"></textarea>
+      <button type="button" aria-label="Start dictation"></button><button type="button" aria-label="Send message"></button><button type="button" aria-label="Stop streaming" hidden></button></form></main>`,
+    setup:()=>{
+      const input=document.querySelector('#mobile-composer-prompt'),send=document.querySelector('[aria-label="Send message"]'),stop=document.querySelector('[aria-label="Stop streaming"]'),list=document.querySelector('#transcript');let n=0;
+      send.onclick=()=>{
+        const sent=input.value;window.sent.push(sent);input.value='';send.hidden=true;stop.hidden=false;n++;
+        const u=document.createElement('li');u.dataset.messageRole='user';u.id='user-'+n;u.innerHTML='<div data-submit-message-animation-target><button data-user-message-bubble type="button"><p data-user-message-copy></p></button></div>';u.querySelector('p').textContent=sent;list.append(u);
+        const a=document.createElement('li');a.dataset.messageRole='assistant';a.id='assistant-'+n;a.innerHTML='<h4 data-message-attribution>ChatGPT said:</h4><div><span aria-hidden="true" data-assistant-placeholder-slot hidden></span><div><div data-assistant-markdown><p data-assistant-stream-block>正在回答</p></div></div></div>';list.append(a);
+        setTimeout(()=>{a.dataset.assistantContentStarted='';a.querySelector('[data-assistant-markdown]').innerHTML='<p dir="ltr" data-assistant-stream-block>回答：'+sent.split('\n')[0]+'</p><ol data-assistant-stream-block><li><p>第一点</p></li><li><p>第二点</p></li></ol><pre dir="ltr" data-assistant-stream-block><code class="language-python" data-assistant-syntax-highlighted><span><span>print</span><span>("CODE_OK")</span></span></code><span data-message-content-controls><button type="button">Copy</button></span></pre><p dir="ltr" data-assistant-stream-block>END_GPT</p>';},500);
+        setTimeout(()=>{a.dataset.messageComplete='';const actions=document.createElement('div');actions.setAttribute('role','group');actions.setAttribute('aria-label','Response actions');actions.dataset.assistantMessageActions='';actions.innerHTML='<button aria-label="Copy"></button>';a.append(actions);stop.hidden=true;send.hidden=false;},1100);
+      };
+    },
+    prompt:'第一行 GPT\n\n  缩进保留 <x> & y',
+    expect:{text:['回答：第一行 GPT','1. 第一点','2. 第二点','```python\nprint("CODE_OK")\n```','END_GPT'],absent:['ChatGPT said','Copy','正在回答']}
+  },
+  qwen:{
+    html:`<div class="chat-room-outer-wrap"><div id="list"></div>
+      <div role="textbox" aria-multiline="true" data-slate-editor="true" data-slate-node="value" contenteditable="true" id="editor"></div>
+      <button type="button" aria-label="添加附件"></button><button type="button" aria-label="发送消息" data-session-switch-target="send-query"></button><button type="button" aria-label="停止回答" hidden></button></div>`,
+    setup:()=>{
+      const editor=document.querySelector('#editor'),send=document.querySelector('[aria-label="发送消息"]'),stop=document.querySelector('[aria-label="停止回答"]'),list=document.querySelector('#list');let model='',n=0;
+      // Slate: one element block per line; an empty line (and the empty editor) is a zero-width span with a <br>.
+      const block=line=>`<div data-slate-node="element"><span data-slate-node="text"><span data-slate-leaf="true">${line?'<span data-slate-string="true"></span>':'<span data-slate-zero-width="n" data-slate-length="0">﻿<br></span>'}</span></span></div>`;
+      const render=()=>{if(!model){editor.innerHTML='<div data-slate-node="element"><span data-slate-node="text"><span data-slate-leaf="true"><span data-slate-placeholder="true" contenteditable="false">向千问提问</span><span data-slate-zero-width="n" data-slate-length="0">﻿<br></span></span></span></div>';return;}const lines=model.split('\n');editor.innerHTML=lines.map(block).join('');[...editor.querySelectorAll('[data-slate-string]')].forEach((s,i)=>{s.textContent=lines.filter(Boolean)[i];});};
+      render();
+      editor.addEventListener('paste',e=>{e.preventDefault();model+=e.clipboardData.getData('text/plain');render();});
+      send.onclick=()=>{
+        const sent=model;window.sent.push(sent);model='';render();send.disabled=true;stop.hidden=false;n++;const id='chat-'+n;
+        const round=document.createElement('div');round.className='chat-round last-message-item';round.dataset.chat=id;
+        round.innerHTML=`<div class="chat-question-wrap"><div class="chat-question-card-wrap" data-chat-question-wrap="${id}"><div class="message-card-wrap question"><div class="question-text-card"></div></div><div class="qs-bottom"><div class="qs-bottom-icon"><svg></svg></div></div></div></div><div data-chat-answers-wrap="${id}" class="chat-answers-card-wrap"><div><div class="answer-common-card"><div class="markdown-pc-special-class"><div class="qk-markdown"><div class="qk-md-paragraph"><span class="qk-md-text">正在回答</span></div></div></div></div></div></div>`;
+        round.querySelector('.question-text-card').textContent=sent;list.append(round);
+        setTimeout(()=>{
+          round.querySelector('.qk-markdown').innerHTML='<div class="qk-md-paragraph"><span class="qk-md-text complete">回答：'+sent.split('\n')[0]+'</span></div><div class="qw-md-code"><div class="rounded"><div class="h-[36px] sticky top-0"><div><span class="font-medium">python</span><div><button type="button"><span>编辑</span></button></div></div></div><div class="codeHighlighterWrapper"><pre><code><span><span class="linenumber react-syntax-highlighter-line-number">1</span><span class="token">print</span><span class="token">("CODE_OK")</span></span></code></pre></div></div></div><div class="qk-md-paragraph"><span class="qk-md-text complete">END_QWEN</span></div><div class="video_note_list-AbC12">相关视频推荐 NOISE_CARD</div>';
+          stop.hidden=true;send.disabled=false;
+          const bar=document.createElement('div');bar.dataset.answerFeedbackToolbar='true';bar.innerHTML='<div class="flex"><div>复制</div></div>';round.querySelector('[data-chat-answers-wrap] > div').append(bar);
+        },900);
+      };
+    },
+    prompt:'第一行 千问\n\n  缩进保留 <x> & y',
+    expect:{text:['回答：第一行 千问','```python\nprint("CODE_OK")\n```','END_QWEN'],absent:['NOISE_CARD','编辑','1print','正在回答']}
+  }
+};
+
+for(const [provider,spec] of Object.entries(PAGES)){
+ test(`${provider} adapter sends once, reads the full answer and sees the completion marker`,async()=>{
+  const browser=await chromium.launch({channel:'chromium',headless:true});
+  try{
+   const page=await browser.newPage();
+   await page.setContent(spec.html);
+   await page.evaluate(()=>{window.sent=[];window.events=[];window.chrome={runtime:{id:'test',onMessage:{addListener(fn){window.listener=fn;}},sendMessage:async e=>{events.push(e);return {ok:true};}}};window.request=message=>new Promise(resolve=>listener(message,{id:'test'},resolve));});
+   await page.evaluate(spec.setup);
+   for(const name of ['adapters.js','content.js'])await page.addScriptTag({content:source(name)});
+   const prep=await page.evaluate(p=>request({type:'YZ_PREPARE',provider:p}),provider);assert.equal(prep.ok,true,prep.error);
+   const sent=await page.evaluate(({p,prompt,baseline})=>request({type:'YZ_SEND',provider:p,requestId:'live-'+p,prompt,baseline}),{p:provider,prompt:spec.prompt,baseline:prep.baseline});
+   assert.equal(sent.ok,true,sent.error);
+   assert.deepEqual(await page.evaluate(()=>window.sent),[spec.prompt],provider+' must deliver the exact prompt once');
+   await page.waitForFunction(()=>window.events.some(e=>['done','attention'].includes(e.status)),{},{timeout:15000});
+   const done=await page.evaluate(()=>window.events.find(e=>['done','attention'].includes(e.status)));
+   assert.equal(done.status,'done',provider+' must finish from its completion signal: '+done.error);
+   for(const part of spec.expect.text)assert(done.text.includes(part),provider+' answer must include '+JSON.stringify(part)+' — got: '+JSON.stringify(done.text));
+   for(const part of spec.expect.absent)assert(!done.text.includes(part),provider+' answer must not include '+JSON.stringify(part)+' — got: '+JSON.stringify(done.text));
+   await page.evaluate(p=>request({type:'YZ_STOP',requestId:'live-'+p}),provider);
+   const d=await page.evaluate(()=>__yuanzhuoLite.diagnostics);assert.equal(d.observers,0);assert.equal(d.timers,0);
+   // A second prompt must not be confused with the first answer.
+   const again=await page.evaluate(p=>request({type:'YZ_PREPARE',provider:p}),provider);assert.equal(again.ok,true,again.error);
+  }finally{await browser.close();}
+ });
+}
