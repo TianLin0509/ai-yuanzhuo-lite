@@ -128,10 +128,13 @@ globalThis.YuanzhuoAdapters = {
   doubao: {
     // 2026-09: the home composer stacks tiptap over a textarea that receives the text.
     input:['textarea.semi-input-textarea','textarea','[contenteditable="true"]'],
-    answer:['[class*="v_list_row"][data-observe-row]:not(:has([class*="bg-g-send"]))','[data-role="assistant"]','[class*="assistant"] [class*="content"]'],
+    editorHandoff:true,
+    // 2026-09-23: new conversations render send_message / receive_message with the message ID on
+    // message_content; older conversations keep v_list_row[data-observe-row]. Support both.
+    answer:['[data-testid="receive_message"]','[class*="v_list_row"][data-observe-row]:not(:has([class*="bg-g-send"]))','[data-role="assistant"]','[class*="assistant"] [class*="content"]'],
     body:'.md-box-root',
-    user:['[class*="v_list_row"][data-observe-row]:has([class*="bg-g-send"])','[data-role="user"]'],
-    userKeyAttribute:'data-observe-row',
+    user:['[data-testid="send_message"] [data-testid="message_content"][data-message-id]','[class*="v_list_row"][data-observe-row]:has([class*="bg-g-send"])','[data-role="user"]'],
+    userKeyAttribute:['data-observe-row','data-message-id'],
     userBody:'.md-box-root',
     userIdAttribute:'data-message-id',
     // Conversation index entries are buttons whose aria-label is a full earlier prompt.

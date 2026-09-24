@@ -40,10 +40,12 @@
     // Reconstruct those numbers in the clone; never drop digits from the prompt.
     for(const list of copy.querySelectorAll('ol')){const items=[...list.children].filter(n=>n.tagName==='LI'),step=list.reversed?-1:1;let number=list.hasAttribute('start')?list.start:list.reversed?items.length:1;for(const item of items){if(item.hasAttribute('value'))number=item.value;item.prepend(document.createTextNode(number+'. '));number+=step;}}
     return normalized(value(copy));}
+  // Sites expose a stable per-message key under different attributes across page versions.
+  function userKey(node,config){if(!node||!config.userKeyAttribute)return null;for(const name of [].concat(config.userKeyAttribute)){const key=node.getAttribute(name);if(key)return key;}return null;}
   const promptLetters=text=>String(text).replace(/[\s\p{P}\p{Z}]/gu,'');
   function ownsUser(job,nodes){
     const last=nodes.at(-1);if(!last)return false;
-    const text=userText(last,job.config),key=job.config.userKeyAttribute?last.getAttribute(job.config.userKeyAttribute):null;
+    const text=userText(last,job.config),key=userKey(last,job.config);
     const messageId=job.config.userIdAttribute?last.querySelector('['+job.config.userIdAttribute+']')?.getAttribute(job.config.userIdAttribute):null;
     if(job.anchor){const same=(job.anchor.key?key===job.anchor.key||job.anchor.messageId&&messageId===job.anchor.messageId:nodes.length===job.anchor.userCount)&&hash(text)===job.anchor.textHash;if(same&&messageId)job.anchor.messageId=messageId;return !!same;}
     // Virtual lists may remove older rows; stable site message IDs take precedence over row counts.
@@ -70,7 +72,7 @@
     if(tag==='TR')return '\n| '+[...node.children].map(cell=>md(cell).trim().replaceAll('|','\\|')).join(' | ')+' |'+(node.parentElement?.tagName==='THEAD'?'\n| '+[...node.children].map(()=>'---').join(' | ')+' |':'');
     return ['P','DIV','SECTION','ARTICLE','UL','OL','TABLE'].includes(tag)?'\n'+text+'\n':text;
   }
-  function snapshot(config){const nodes=answers(config),last=nodes.at(-1),userNodes=users(config);return {count:nodes.length,lastHash:hash(answerText(last,config)),userCount:userNodes.length,userKey:config.userKeyAttribute?userNodes.at(-1)?.getAttribute(config.userKeyAttribute):null,url:cleanUrl()};}
+  function snapshot(config){const nodes=answers(config),last=nodes.at(-1),userNodes=users(config);return {count:nodes.length,lastHash:hash(answerText(last,config)),userCount:userNodes.length,userKey:userKey(userNodes.at(-1),config),url:cleanUrl()};}
   function cleanup(job){if(job.observer){job.observer.disconnect();job.observer=null;diagnostics.observers--;}if(job.timer){clearTimeout(job.timer);job.timer=null;diagnostics.timers--;}if(job.flushTimer){clearTimeout(job.flushTimer);job.flushTimer=null;diagnostics.timers--;}if(diagnostics.activeRequest===job.requestId)diagnostics.activeRequest=null;}
   function retire(job){cleanup(job);job.cancelled=true;job.lastElement=null;job.userAnchor=null;job.lastText='';delete job.prompt;jobs.set(job.requestId,{requestId:job.requestId,status:job.status,sequence:job.sequence,cancelled:true});for(const [key,value] of jobs){if(jobs.size<=32)break;if(value.cancelled)jobs.delete(key);}}
   function emit(job,status,text=job.lastText,error='',extra={}){
@@ -151,9 +153,14 @@
       }
     }
     await sleep(120);
-    if(normalized(value(input))!==normalized(text))throw new Error('网页输入内容与原文不一致，已取消发送，请检查原网页。');
+    if(normalized(value(handedOff(input,config,text)))!==normalized(text))throw new Error('网页输入内容与原文不一致，已取消发送，请检查原网页。');
   }
   function loginRequired(config){if(!config.login)return false;if(config.login.url&&config.login.url.test(location.pathname))return true;return !!(config.login.selectors&&find(config.login.selectors));}
+  // 豆包's home composer swaps a textarea for its rich editor (or back) and moves the text itself.
+  // Only adapters that declare this follow it, only across element types, and only when the old
+  // editor is gone or empty while the new one holds exactly this prompt. A same-type replacement
+  // still cancels the send: the page's editor model may no longer hold the text.
+  function handedOff(input,config,prompt){if(!config.editorHandoff)return input;const current=find(config.input);if(current&&current!==input&&current.tagName!==input.tagName&&(!input.isConnected||!visible(input)||!normalized(value(input)))&&normalized(value(current))===normalized(prompt))return current;return input;}
   function prepare(message){
     const config=globalThis.YuanzhuoAdapters[message.provider];if(!config)throw new Error('不支持该网页。');
     if(config.blocked&&find(config.blocked))throw new Error('网页要求人机验证，请先在原网页完成验证。');
@@ -168,7 +175,7 @@
     if(jobs.has(message.requestId))return {status:jobs.get(message.requestId).status,duplicate:true};
     const config=globalThis.YuanzhuoAdapters[message.provider];if(!config)throw new Error('不支持该网页。');
     assertNoAttachments(config);
-    const input=find(config.input);if(!input)throw new Error('输入框已消失，请检查登录状态。');
+    let input=find(config.input);if(!input)throw new Error('输入框已消失，请检查登录状态。');
     if(normalized(value(input)))throw new Error('发送前发现网页已有草稿，未覆盖或发送。');
     if(cleanUrl()!==message.baseline.url)throw new Error('发送前网页对话已变化，已取消发送。');
     const job={...message,config,sequence:0,startedAt:Date.now(),changedAt:Date.now(),lastText:'',lastHash:'',expectedUrl:cleanUrl(),boundConversation:config.conversation.test(location.pathname),cancelled:false,dispatched:false,sawBusy:false,acknowledged:false,sending:true,status:'sending'};
@@ -181,6 +188,7 @@
       if(!available(button)){retire(job);throw new Error('未找到可用发送按钮，文字保留在网页中，未自动按回车或重试。');}
       // Nothing may yield between final ownership/integrity checks and the click.
       assertNoAttachments(config);assertNoLimit(config);
+      input=handedOff(input,config,message.prompt);
       if(!input.isConnected||find(config.input)!==input)throw new Error('发送前网页输入框已变化，已取消发送，请检查原网页。');
       if(cleanUrl()!==message.baseline.url)throw new Error('发送前网页对话已变化，已取消发送。');
       if(normalized(value(input))!==normalized(message.prompt))throw new Error('发送前网页输入内容已变化，已取消发送，请检查原网页。');

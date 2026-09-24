@@ -88,6 +88,25 @@ const PAGES={
     prompt:'第一行 GPT\n\n  缩进保留 <x> & y',
     expect:{text:['回答：第一行 GPT','1. 第一点','2. 第二点','```python\nprint("CODE_OK")\n```','END_GPT'],absent:['ChatGPT said','Copy','正在回答']}
   },
+  // 豆包 2026-09-23 home page: typing into the textarea makes the page replace it with its tiptap
+  // editor carrying the same text; new conversations render send_message / receive_message.
+  doubao:{
+    html:`<main><div id="list"></div><div class="composer"><textarea class="textarea-YelHeN" placeholder="发消息或按住空格说话..."></textarea></div>
+      <button id="flow-end-msg-send" class="send-msg-btn" disabled></button></main>`,
+    setup:()=>{
+      const box=document.querySelector('.composer'),send=document.querySelector('#flow-end-msg-send'),list=document.querySelector('#list');let editor=null,n=0;
+      const toTiptap=text=>{editor=document.createElement('div');editor.className='tiptap ProseMirror';editor.contentEditable='true';editor.innerHTML=text.split('\n').map(line=>'<p>'+(line?line.replaceAll('&','&amp;').replaceAll('<','&lt;'):'<br>')+'</p>').join('');box.replaceChildren(editor);send.disabled=false;};
+      document.querySelector('textarea').addEventListener('input',e=>setTimeout(()=>toTiptap(e.target.value),60));
+      send.onclick=()=>{
+        const text=[...editor.children].map(p=>p.textContent).join('\n');window.sent.push(text);editor.innerHTML='<p><br></p>';send.disabled=true;n++;
+        list.insertAdjacentHTML('beforeend',`<div class="v_list_row"><div data-testid="send_message" data-message-role="user"><div data-testid="message_content" data-message-id="u${n}"><div data-testid="message_text_content" class="md-box-root" data-streaming="false"></div></div></div></div><div class="v_list_row"><div data-testid="receive_message" data-message-role="assistant"><div data-testid="message_content" data-message-id="a${n}"><div data-testid="message_text_content" class="md-box-root" data-streaming="true"><p>正在回答</p></div></div><div data-foundation-type="receive-message-action-bar"></div></div></div>`);
+        list.querySelector(`[data-message-id="u${n}"] .md-box-root`).textContent=text;
+        setTimeout(()=>{const body=list.querySelector(`[data-message-id="a${n}"] .md-box-root`);body.innerHTML='<p>回答：'+text.split('\n')[0].replaceAll('<','&lt;')+'</p><p>END_DOUBAO</p>';body.dataset.streaming='false';list.querySelector(`[data-message-id="a${n}"]`).parentElement.querySelector('[data-foundation-type="receive-message-action-bar"]').innerHTML='<button data-testid="message_action_copy">复制</button>';},800);
+      };
+    },
+    prompt:'第一行 豆包\n\n  缩进保留 <x> & y',
+    expect:{text:['回答：第一行 豆包','END_DOUBAO'],absent:['正在回答']}
+  },
   qwen:{
     html:`<div class="chat-room-outer-wrap"><div id="list"></div>
       <div role="textbox" aria-multiline="true" data-slate-editor="true" data-slate-node="value" contenteditable="true" id="editor"></div>
