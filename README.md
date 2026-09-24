@@ -2,7 +2,9 @@
 
 Chrome MV3 网页圆桌扩展。**每个 Chrome 窗口一场圆桌：主 Tab 阅读，侧栏操作。** 三种视图共用同一份完整记录：A 单篇精读（默认）、B 双篇对读、C 回答索引；选择会自动保存。
 
-首批成员：**DeepSeek / Kimi / 豆包**。本版本为 0.1.0 初步实现；2026-09-09 已使用登录后的三家真实网页完成同题、追问、讨论、重新提取和停止测试，并由豆包完成队长总结。详见 `docs/20260909-initial-verification-codex.md`。
+可选成员：国内 **DeepSeek / Kimi / 豆包 / 千问 / 元宝**，海外 **ChatGPT / Claude / Gemini / Grok**，每场选 2–3 位（默认前三家）。2026-09-23 新增的六家中，ChatGPT、Gemini、千问已在真实网页（游客模式）通过同题、长回答、讨论、总结和停止；Claude、Grok、元宝待登录后验证，见 `docs/20260923-more-providers-verification-claude.md`。
+
+本版本为 0.1.0 初步实现；2026-09-09 已使用登录后的三家真实网页完成同题、追问、讨论、重新提取和停止测试，并由豆包完成队长总结。详见 `docs/20260909-initial-verification-codex.md`。
 
 新增后台机制已在登录后的三家原生浏览器完成正文长回答、多行代码、迭代及最小化闲置 330 秒后的讨论验证。豆包验证码恢复也已通过；文档卡片只能明确提示内容未提取完整，不作为正文完成。过程与边界见 `docs/20260909-deep-stress-verification-codex.md` 和本地 artifacts 实测记录。
 
@@ -10,10 +12,10 @@ Chrome MV3 网页圆桌扩展。**每个 Chrome 窗口一场圆桌：主 Tab 阅
 
 1. `npm ci`，然后 `npm run build`。
 2. Chrome 扩展管理页开启开发者模式，加载解压的 `dist` 文件夹。
-3. 点击扩展图标打开侧栏，点击“连接成员网页”，分别完成网页登录。
+3. 点击扩展图标打开侧栏，用“选择成员”选 2–3 位，点击“连接成员网页”，分别完成网页登录。未登录的网页会在发送前明确提示，不会发出提问。
 4. 点击“打开圆桌记录”进入本窗口的主 Tab。在侧栏输入问题并选择同题提问、独立迭代、观点讨论或队长总结。
 5. 主界面顶部选择 A/B/C；左侧时光机显示原始问题和提问时间。回看历史不改变侧栏的最新发送基准，旧观点可通过“引用到下一轮”带入草稿。
-6. “新建圆桌窗口”打开独立窗口及三家成员 Tab。历史列表会回到已有窗口，或在新窗口恢复该圆桌；关闭窗口保留记录和草稿。
+6. “新建圆桌窗口”按最近一次选择的成员打开独立窗口及成员 Tab。历史列表会回到已有窗口，或在新窗口恢复该圆桌；关闭窗口保留记录和草稿。
 
 一个圆桌为每家成员绑定本窗口内的独立标签页和对话 URL。“原网页”打开所选记录对应的 URL，不修改当前成员绑定。侧栏关闭后，主 Tab 下方提供同一份草稿的操作区；重新打开侧栏时自动隐藏，避免两处输入。跨窗口发送被拒绝，移走成员页时需移回或停止后重新连接。
 
@@ -65,7 +67,7 @@ npm run browser:live
 ## 实现参考
 
 - 2026-09-12 确认的三视图：主 Tab 显示收集记录，A 切换一家、B 并排两家、C 按需展开；原生 AI Tab 提供实时网站交互。时光机沿用旧版按提问锚定回答的思路。
-- 旧版 AI-Arena：参考三站 DOM 适配经验，沿用自由辩论的提示词、排除自身回答规则和 CDP 唤醒/焦点机制；未迁入其 MAIN world 调度补丁和完整模块。
+- 旧版 AI-Arena：参考九站 DOM 适配经验，沿用自由辩论的提示词、排除自身回答规则和 CDP 唤醒/焦点机制；未迁入其 MAIN world 调度补丁、远程选择器、自动补发和完整模块。逐项取舍见 `docs/20260923-more-providers-verification-claude.md`。
 - [Chrome sidePanel](https://developer.chrome.com/docs/extensions/reference/api/sidePanel)
 - [MV3 service worker 生命周期](https://developer.chrome.com/docs/extensions/develop/concepts/service-workers/lifecycle)
 - [Playwright 扩展测试](https://playwright.dev/docs/chrome-extensions)
