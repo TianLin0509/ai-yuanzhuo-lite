@@ -61,7 +61,8 @@ export async function launchNativeBrowser({profile,extension,headless=false,wind
       if(spawnError)throw spawnError;
       if(exitInfo)throw new Error(`Native Chromium exited before CDP was ready: ${JSON.stringify(exitInfo)}. See ${stderrPath}`);
       if(fs.existsSync(activePortFile)){
-        const current=fs.readFileSync(activePortFile,'utf8');
+        // Chromium may still hold the file while writing it on Windows (EBUSY/EPERM); read again next tick.
+        let current;try{current=fs.readFileSync(activePortFile,'utf8');}catch(error){if(!['EBUSY','EPERM','ENOENT'].includes(error.code))throw error;await delay(100);continue;}
         if(current!==previousPort){
           const [port,webSocketPath]=current.trim().split(/\r?\n/);
           if(/^\d+$/.test(port)&&webSocketPath?.startsWith('/devtools/browser/')){
