@@ -47,7 +47,7 @@ export function composePrompts(kind,text,session,{captain,depth='简要结论'}=
   const latest=session.rounds.at(-1),answers=latest?.jobs.filter(j=>j.status==='done'&&j.text)||[];
   if(['ask','iterate'].includes(kind)&&!text.trim())throw new Error('请先输入问题或迭代要求。');
   if(kind==='discuss'&&answers.length<2)throw new Error('至少需要两份完整回答才能进行观点讨论。');
-  if(kind==='discuss'&&latest.jobs.some(j=>j.status!=='done'||!j.text))throw new Error('本轮仍有不完整的回答，请先重新提取或核对完成，再讨论。');
+  if(kind==='discuss'&&latest.jobs.some(j=>j.status!=='skipped'&&(j.status!=='done'||!j.text)))throw new Error('本轮仍有不完整的回答，请先重新提取、核对完成，或跳过该成员，再讨论。');
   if(kind==='summary'&&(!answers.length||!session.members.includes(captain)))throw new Error('请为已有回答选择一位队长。');
   const targets=kind==='summary'?[captain]:session.members;
   const prompts=targets.map(provider=>{

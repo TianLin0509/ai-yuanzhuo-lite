@@ -34,3 +34,13 @@ test('轮次忙时阻止重复发起，新请求身份互不混用',()=>{const s
 test('迟到、乱序、其他标签页与终止后的结果不能覆盖本轮',()=>{const job={requestId:'current',tabId:123,status:'streaming',sequence:5};const event={requestId:'current',sequence:6};assert(acceptEvent(job,event,123));assert(!acceptEvent(job,event,124));assert(!acceptEvent(job,{...event,requestId:'old'},123));assert(!acceptEvent(job,{...event,sequence:5},123));assert(!acceptEvent({...job,status:'stopped'},event,123));assert(!acceptEvent({...job,status:'done'},event,123));});
 test('平台域名完整匹配，不接受伪造子域；成员数量与重复项受约束',()=>{assert.equal(providerFor('https://www.kimi.com/chat/123'),'kimi');assert.equal(providerFor('https://chat.deepseek.com.evil.test/'),null);assert.throws(()=>newSession(['deepseek','deepseek']),/不同/);assert.throws(()=>newSession(['unknown','kimi']),/不同/);});
 test('导出保留全部轮次、原始问题、完整答案和失败原因',()=>{const s=seed();for(let i=0;i<2;i++){const r=makeRound('ask','第'+i+'问\n完整原文',s);r.jobs.forEach((j,k)=>{j.status=k===2?'error':'done';j.text=k===2?'':'全文'.repeat(10000);j.error=k===2?'登录未完成':'';});s.rounds.push(r);}const md=toMarkdown(s);assert(md.includes('第0问\n完整原文'));assert(md.includes('第1问\n完整原文'));assert(md.includes('全文'.repeat(10000)));assert(md.includes('登录未完成'));});
+test('跳过的成员不阻塞讨论，换进来的新成员收到其他人的完整回答；未跳过的失败仍阻塞',()=>{
+ const s=seed(),r=makeRound('ask','问题',s);s.rounds.push(r);r.jobs[0].status=r.jobs[2].status='done';r.jobs[0].text='DS_COMPLETE';r.jobs[2].text='DOUBAO_COMPLETE';r.jobs[1].status='attention';r.jobs[1].text='KIMI_PARTIAL';
+ assert.throws(()=>composePrompts('discuss','',s),/跳过该成员/);
+ r.jobs[1].status='skipped';s.members=['deepseek','qwen','doubao'];
+ const prompts=Object.fromEntries(composePrompts('discuss','',s).map(p=>[p.provider,p.prompt]));
+ assert.deepEqual(Object.keys(prompts),['deepseek','qwen','doubao']);
+ assert(prompts.qwen.includes('DS_COMPLETE')&&prompts.qwen.includes('DOUBAO_COMPLETE'));
+ assert(!prompts.deepseek.includes('DS_COMPLETE')&&prompts.deepseek.includes('DOUBAO_COMPLETE'));
+ for(const p of Object.values(prompts))assert(!p.includes('KIMI_PARTIAL'));
+});
