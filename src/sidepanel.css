@@ -126,6 +126,13 @@ body:has(#error-banner:not([hidden])) .desktop{height:calc(100dvh - 84px)}
 .recovery{margin-left:auto;display:flex;gap:12px}
 .recovery button{height:auto;border:0;background:none;padding:0;color:var(--acc);font-size:12.5px}
 .recovery button:hover{background:none;text-decoration:underline}
+/* Edit actions appear on hover; a skipped or failed member shows 换人 right away. */
+.member-row .edit-op{display:none}
+.member-row:hover .edit-op,.member-row:focus-within .edit-op,.member-row:is([data-status=skipped],[data-status=error],[data-status=attention]) .edit-op[data-op=replace]{display:inline}
+.section-head small{color:var(--muted);font-weight:400;margin-left:4px}
+.add-member{height:28px;margin-top:2px;border:1px dashed var(--line);background:none;color:var(--muted);width:100%}
+.add-member:hover{color:var(--acc);border-color:var(--acc);background:none}
+.member-options.pick fieldset{gap:8px}
 .member-row[data-status=done] .recovery{opacity:0}
 .member-row[data-status=done]:hover .recovery,.member-row[data-status=done]:focus-within .recovery{opacity:1}
 .member-row .member-error{flex-basis:100%;margin:0 0 6px 16px}
