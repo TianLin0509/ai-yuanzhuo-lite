@@ -6,7 +6,7 @@ import * as core from '../src/core.js';
 import {createBackgroundSupport} from '../src/background-support.js';
 import {createWorkspaces} from '../src/workspaces.js';
 
-async function harness({oldRound=false,wrongTab=false,sendFails=false,onSend,focusFails=false,onInject,onAttach,configure,tabUrl,onTargets}={}){
+async function harness({oldRound=false,wrongTab=false,sendFails=false,onSend,onPage,focusFails=false,onInject,onAttach,configure,tabUrl,onTargets}={}){
  const s=core.newSession(['deepseek','kimi']);const first=core.makeRound('ask','first question',s);s.rounds.push(first);
  s.bindings={deepseek:{tabId:1,url:'https://chat.deepseek.com/a/chat/s/original'},kimi:{tabId:2,url:'https://www.kimi.com/chat/original'}};
  for(const j of first.jobs)Object.assign(j,{status:'done',text:'FIRST ANSWER',format:'markdown',phase:'attempted',tabId:s.bindings[j.provider].tabId,url:s.bindings[j.provider].url,baseline:{count:0,lastHash:'',userCount:0,url:s.bindings[j.provider].url}});
@@ -18,7 +18,7 @@ async function harness({oldRound=false,wrongTab=false,sendFails=false,onSend,foc
   storage:{session:{get,set:async values=>Object.assign(data,structuredClone(values)),remove:async keys=>{for(const key of [keys].flat())delete data[key];}},local:{get,set:async values=>Object.assign(data,structuredClone(values)),remove:async keys=>{for(const key of [keys].flat())delete data[key];}}},
   debugger:{getTargets:async()=>onTargets?onTargets():Object.values(s.bindings).map(b=>({tabId:b.tabId,id:'target-'+b.tabId,type:'page'})),attach:async({tabId})=>{debuggerCalls.push(['attach',tabId]);if(onAttach)await onAttach(tabId);},sendCommand:async({tabId},method)=>{debuggerCalls.push([method,tabId]);if(focusFails&&method==='Emulation.setFocusEmulationEnabled')throw Error('test focus failure');},detach:async({tabId})=>debuggerCalls.push(['detach',tabId]),onDetach:{addListener:fn=>{onDetach=fn;}}},
   sidePanel:{setPanelBehavior:async()=>{}},scripting:{executeScript:async args=>{if(onInject)await onInject(args.target.tabId);return [];}},windows:{update:async()=>{},get:async id=>({id})},
-  tabs:{get:async id=>({id,windowId:1,status:'complete',url:tabUrl?.(id)??(id===1&&wrongTab?'https://chat.deepseek.com/a/chat/s/unrelated':Object.values(s.bindings).find(b=>b.tabId===id).url)}),sendMessage:async(tabId,message)=>{calls.push({tabId,...message});if(message.type==='YZ_SEND'&&onSend)return onSend(message);if(message.type==='YZ_SEND'&&sendFails)throw Error('test send failure');if(message.type==='YZ_PREPARE'){const url=Object.values(s.bindings).find(b=>b.tabId===tabId).url;return {ok:true,baseline:{count:1,lastHash:'base',userCount:1,url},url};}return {ok:true};}},
+  tabs:{get:async id=>({id,windowId:1,status:'complete',url:tabUrl?.(id)??(id===1&&wrongTab?'https://chat.deepseek.com/a/chat/s/unrelated':Object.values(s.bindings).find(b=>b.tabId===id).url)}),sendMessage:async(tabId,message)=>{calls.push({tabId,...message});if(onPage){const r=await onPage(tabId,message);if(r!==undefined)return r;}if(message.type==='YZ_SEND'&&onSend)return onSend(message);if(message.type==='YZ_SEND'&&sendFails)throw Error('test send failure');if(message.type==='YZ_PREPARE'){const url=Object.values(s.bindings).find(b=>b.tabId===tabId).url;return {ok:true,baseline:{count:1,lastHash:'base',userCount:1,url},url};}return {ok:true};}},
   alarms:{get:async()=>null,create:async()=>{},clear:async()=>{},onAlarm:{addListener:noop}},
   runtime:{onMessage:{addListener:noop},onInstalled:{addListener:noop},onStartup:{addListener:noop}}
  };
@@ -132,12 +132,14 @@ test('Sending and closing the same window at once: either the close is refused o
  }
 });
 test('A send from a new-chat page whose reading fails records the chat the site created, so a reload re-binds by address',async()=>{
+ for(const [question,adopted] of [['from a new chat',true],['a chat the user opened',false]]){
  let sent=false;
- const h=await harness({configure:s=>{s.bindings.deepseek={tabId:1,url:'https://chat.deepseek.com/'};},tabUrl:id=>id===1?(sent?'https://chat.deepseek.com/a/chat/s/created-by-send':'https://chat.deepseek.com/'):'https://www.kimi.com/chat/original',
+ const h=await harness({onPage:(tabId,m)=>m.type==='YZ_LATEST_QUESTION'?{ok:true,question,url:'https://chat.deepseek.com/a/chat/s/created-by-send'}:undefined,configure:s=>{s.bindings.deepseek={tabId:1,url:'https://chat.deepseek.com/'};},tabUrl:id=>id===1?(sent?'https://chat.deepseek.com/a/chat/s/created-by-send':'https://chat.deepseek.com/'):'https://www.kimi.com/chat/original',
   onSend:m=>{if(m.provider==='deepseek'){sent=true;throw Error('reading failed after the click');}return {ok:true};}});
  const state=await h.command({action:'start',sessionId:h.s.id,kind:'iterate',text:'from a new chat'});
  const ds=state.session.rounds.at(-1).jobs.find(j=>j.provider==='deepseek');assert.equal(ds.status,'attention');assert.equal(ds.phase,'attempted');
- assert.equal(state.session.bindings.deepseek.url,'https://chat.deepseek.com/a/chat/s/created-by-send');assert.equal(state.session.bindings.deepseek.tabId,1);
+ assert.equal(state.session.bindings.deepseek.url,adopted?'https://chat.deepseek.com/a/chat/s/created-by-send':'https://chat.deepseek.com/',question);assert.equal(state.session.bindings.deepseek.tabId,1);
+ }
 });
 test('Stopping a workflow while the next turn is being claimed: afterwards nothing is active or waiting and nothing more is sent',async()=>{
  const h=await harness({configure:s=>{const r=core.makeRound('relay','relay question',s,{order:['deepseek','kimi']});r.jobs[0].status='done';r.jobs[0].text='DS';r.jobs[0].phase='attempted';s.rounds.push(r);}});

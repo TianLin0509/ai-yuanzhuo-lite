@@ -66,7 +66,15 @@ const LOST_CHAT='没能回到当时的对话：网站打开了新对话（常见
 function startedChat(provider,saved,here){const pattern=PROVIDERS[provider].conversation;try{return !!pattern&&providerFor(here)===provider&&!pattern.test(new URL(saved).pathname)&&pattern.test(new URL(here).pathname);}catch{return false;}}
 // After a send from a new-chat page the site moves to the chat it created. If reading then fails, record that
 // address now (the tab id is certainly valid in this browser session) so later reloads re-bind by exact address.
-async function followStartedChat(ref){try{const s=await loadSession(ref.sessionId),job=findJob(s,ref.roundId,ref.jobId),binding=s.bindings[job?.provider];if(!job?.tabId||job.phase!=='attempted'||binding?.tabId!==job.tabId)return;const tab=await chrome.tabs.get(job.tabId),here=tab.url||'';if(startedChat(job.provider,binding.url,here))await mutate(ref.sessionId,x=>{if(x.bindings[job.provider]?.tabId===tab.id)x.bindings[job.provider]={tabId:tab.id,url:here};});}catch(error){console.info('[AI圆桌lite] 未能记录新对话地址',error.message);}}
+// Only right after our own send fails, only for this roundtable's tab in its own window, and only with positive
+// evidence: the chat's latest question must be this round's text. A chat the user opened is never adopted.
+const letters=text=>String(text).replace(/[\s\p{P}\p{Z}]/gu,'');
+async function followStartedChat(ref){try{
+  const s=await loadSession(ref.sessionId),job=findJob(s,ref.roundId,ref.jobId),binding=s.bindings[job?.provider];if(!job?.tabId||!job.prompt||job.phase!=='attempted'||binding?.tabId!==job.tabId)return;
+  const tab=await chrome.tabs.get(job.tabId),here=tab.url||'';if(tab.windowId!==await workspaces.owner(ref.sessionId)||!startedChat(job.provider,binding.url,here))return;
+  const page=await pageMessage(tab.id,{type:'YZ_LATEST_QUESTION',provider:job.provider});if(!page.question||cleanUrl(page.url)!==cleanUrl(here)||!letters(page.question).includes(letters(job.prompt)))return;
+  await mutate(ref.sessionId,x=>{if(x.bindings[job.provider]?.tabId===tab.id&&x.bindings[job.provider].url===binding.url)x.bindings[job.provider]={tabId:tab.id,url:here};});
+}catch(error){console.info('[AI圆桌lite] 未能记录新对话地址',error.message);}}
 function fellBack(provider,saved,here){const pattern=PROVIDERS[provider].conversation;try{return !!pattern&&providerFor(here)===provider&&pattern.test(new URL(saved).pathname)&&!pattern.test(new URL(here).pathname);}catch{return false;}}
 async function connection(sessionId,provider,{focus=false,verifyConversation=false,rereadJob=null}={}){
   const ownerWindow=await workspaces.requireWindow(sessionId);
@@ -146,7 +154,7 @@ async function stopWaiting(sessionId,roundId){await mutate(sessionId,s=>{const r
 async function recover(){
   for(const meta of index.sessions){const session=await loadSession(meta.id);for(const round of session.rounds){for(const job of round.jobs){if(!ACTIVE.has(job.status)||Date.now()-job.updatedAt<45000)continue;
     let active=false;try{if(job.tabId&&support.has(job.tabId,job.requestId)){const result=await pageMessage(job.tabId,{type:'YZ_STATUS',requestId:job.requestId});active=result.active;}}catch(error){console.info('[AI圆桌lite] 恢复检查：',error.message);}
-    if(!active){await followStartedChat({sessionId:session.id,roundId:round.id,jobId:job.id});}if(!active)await updateJob({sessionId:session.id,roundId:round.id,jobId:job.id,requestId:job.requestId},j=>{if(ACTIVE.has(j.status)){j.status='attention';j.error='网页或扩展连接已重启。请打开原网页并重新提取；不会自动重发。';}});
+    if(!active)await updateJob({sessionId:session.id,roundId:round.id,jobId:job.id,requestId:job.requestId},j=>{if(ACTIVE.has(j.status)){j.status='attention';j.error='网页或扩展连接已重启。请打开原网页并重新提取；不会自动重发。';}});
   }}
     const last=session.rounds.at(-1);if(relayNext(last)>=0&&await workspaces.owner(session.id))advanceLater(session.id,last.id);
   }await alarm();
@@ -302,7 +310,7 @@ chrome.runtime.onConnect?.addListener(port=>{
 });
 chrome.sidePanel.onOpened?.addListener(({windowId})=>{ready.then(()=>{closedPanels.delete(windowId);nativePanelState.set(windowId,true);return publishPanel(windowId);}).catch(e=>console.error('[AI圆桌lite] 侧栏打开状态保存失败',e));});
 chrome.sidePanel.onClosed?.addListener(({windowId})=>{ready.then(()=>{closedPanels.add(windowId);nativePanelState.set(windowId,false);return publishPanel(windowId);}).catch(e=>console.error('[AI圆桌lite] 侧栏关闭状态保存失败',e));});
-chrome.windows.onRemoved?.addListener(windowId=>{ready.then(async()=>{const sessionId=await workspaces.ownerForWindow(windowId);await workspaces.forget(windowId);if(sessionId){const s=await loadSession(sessionId);for(const r of s.rounds)if(r.jobs.some(j=>j.status==='waiting'))await stopWaiting(sessionId,r.id);for(const r of s.rounds)for(const j of r.jobs)if(ACTIVE.has(j.status))await stopJob({sessionId,roundId:r.id,jobId:j.id});await alarm();await discardIfEmpty(sessionId);}await chrome.storage.session.remove('arena.panel.'+windowId);}).catch(e=>console.error('[AI圆桌lite] 关闭窗口清理失败',e));});
+chrome.windows.onRemoved?.addListener(windowId=>{ready.then(async()=>{const sessionId=await workspaces.ownerForWindow(windowId);await workspaces.forget(windowId);if(sessionId){const s=await loadSession(sessionId);for(const r of s.rounds)if(r.jobs.some(j=>j.status==='waiting'))await stopWaiting(sessionId,r.id);for(const r of (await loadSession(sessionId)).rounds)for(const j of r.jobs)if(ACTIVE.has(j.status))await stopJob({sessionId,roundId:r.id,jobId:j.id});await alarm();await discardIfEmpty(sessionId);}await chrome.storage.session.remove('arena.panel.'+windowId);}).catch(e=>console.error('[AI圆桌lite] 关闭窗口清理失败',e));});
 chrome.alarms.onAlarm.addListener(event=>{if(event.name===ALARM)ready.then(recover).catch(error=>console.error('[AI圆桌lite] 恢复失败',error));});
 chrome.runtime.onInstalled.addListener(details=>{ready.then(()=>details.reason==='update'?workspaces.restoreAfterReload():null).catch(error=>console.error('[AI圆桌lite] 初始化失败',error));});
 chrome.runtime.onStartup.addListener(()=>{ready.then(recover).catch(error=>console.error('[AI圆桌lite] 启动恢复失败',error));});
