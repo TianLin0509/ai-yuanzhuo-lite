@@ -2,7 +2,10 @@
 globalThis.YuanzhuoAdapters = {
   deepseek: {
     input:['#chat-input','textarea[placeholder]'],
-    answer:['.ds-markdown','[data-role="assistant"]'],
+    // DeepThink puts its reasoning in .ds-think-content (also .ds-markdown); the reply itself is main-content (2026-09-26).
+    answer:['.ds-markdown.ds-assistant-message-main-content','.ds-markdown:not(.ds-think-content .ds-markdown)','[data-role="assistant"]'],
+    exclude:'.ds-think-content',
+    mode:[{select:'.ds-toggle-button[aria-pressed="true"]',all:true,map:{DeepThink:'深度思考',Search:'联网搜索'}}],
     user:['[data-virtual-list-item-key]:has(.fbb737a4)','[data-role="user"]','[class*="user-message"]','.fbb737a4'],
     userBody:'.fbb737a4',
     userKeyAttribute:'data-virtual-list-item-key',
@@ -29,6 +32,7 @@ globalThis.YuanzhuoAdapters = {
     stop:['.send-button-container.stop','button[aria-label*="停止"]','button[aria-label*="Stop"]','button[class*="stop"]','[class*="stop-button"]'],
     complete:['.segment-assistant-actions .icon-button','button[aria-label*="复制"]','button[aria-label*="Copy"]','[class*="copy-button"]','[data-testid="copy-button"]'],
     login:{selectors:['.not-login-icon','.next-sidebar-history-list__login']},
+    mode:[{select:'[data-testid="model-select-trigger"]'},{select:'.current-model .name'}],
     root:['main','[role="main"]','[class*="chat-content"]'],
     conversation:/\/chat\/[^/]+/
   },
@@ -45,6 +49,7 @@ globalThis.YuanzhuoAdapters = {
     busy:['model-response .markdown[aria-busy="true"]'],
     complete:['message-actions button[aria-label="Copy"]','message-actions button[aria-label*="Copy" i]','message-actions button[aria-label*="复制"]','.response-footer.complete'],
     code:{block:'code-block',language:'.code-block-decoration > span'},
+    mode:[{select:'button[aria-label^="Open mode picker"]',attr:'aria-label',pattern:/currently\s+(.+)$/i}],
     exclude:'.cdk-visually-hidden,model-thoughts,sources-list,.response-footer',
     root:['chat-window','main','[role="main"]'],
     conversation:/\/app\/[^/]+/
@@ -62,6 +67,7 @@ globalThis.YuanzhuoAdapters = {
     stop:['button[aria-label="Stop streaming"]','button[aria-label*="Stop generating" i]','[data-testid="stop-button"]','button[aria-label*="Stop" i]:not([aria-label*="dictation" i])','button[aria-label*="停止"]'],
     complete:['[data-message-complete]','[data-assistant-message-actions]','[data-testid="copy-turn-action-button"]'],
     exclude:'[data-message-attribution],[data-message-content-controls],[data-assistant-placeholder-slot]',
+    mode:[{select:'[data-testid="model-switcher-dropdown-button"]'}],
     root:['main','[role="main"]'],
     conversation:/\/u?c\/[^/]+/
   },
@@ -77,6 +83,7 @@ globalThis.YuanzhuoAdapters = {
     complete:['[data-is-streaming="false"]'],
     exclude:'.sr-only,details,[data-testid*="thinking" i]',
     login:{url:/^\/(login|logout)/},
+    mode:[{select:'[data-testid="model-selector-dropdown"]'}],
     root:['main','[role="main"]'],
     conversation:/\/chat\/[^/]+/
   },
@@ -90,6 +97,7 @@ globalThis.YuanzhuoAdapters = {
     stop:['button[aria-label="Stop model response"]','button[aria-label*="Stop" i]','button[aria-label*="停止"]'],
     complete:['.action-buttons button[aria-label="Copy"]','button[aria-label="Regenerate"]'],
     login:{selectors:['[data-testid="anon-paywall-sign-up-card"]']},
+    mode:[{select:'button[aria-label="Model select"]'}],
     root:['main','[role="main"]'],
     conversation:/\/c\/[^/]+/
   },
@@ -105,6 +113,7 @@ globalThis.YuanzhuoAdapters = {
     complete:['.agent-chat__conv--ai__toolbar'],
     exclude:'[class*="think"],[class*="process"],[class*="deep-search"],[class*="timeline"],[class*="sources"]',
     login:{selectors:['.agent-dialogue__tool__login','.agent-dialogue__content--common__header.nologin','.hyc-login__dialog']},
+    mode:[{select:'[aria-label="Switch model"]'}],
     root:['main','[role="main"]','.agent-chat__list'],
     conversation:/\/chat\/[^/]+\/[^/]+/
   },
@@ -122,6 +131,9 @@ globalThis.YuanzhuoAdapters = {
     complete:['[data-answer-feedback-toolbar]'],
     exclude:'script,style,.react-syntax-highlighter-line-number,[class*="video_note_list"],[class*="video-item-"],[class*="note-item-"],[class*="doc-item-"],[class*="web-item-"],[class*="hydrate"]',
     code:{block:'.qw-md-code',language:'.sticky span'},
+    // After several automated questions Alibaba's baxia check opens a /punish iframe (seen 2026-09-26, AI圆桌 Android too).
+    blocked:['.baxia-dialog-content iframe','iframe[src*="/punish"]'],
+    mode:[{select:'button',pattern:/^(Qwen\S*)$/,first:true},{select:'button[aria-label="快速"],button[aria-label="思考"],button[aria-label="深度思考"],button[aria-label="思考研究"]',attr:'aria-label',first:true}],
     root:['main','[role="main"]','.chat-room-outer-wrap'],
     conversation:/\/chat\/[^/]+/
   },
@@ -129,6 +141,9 @@ globalThis.YuanzhuoAdapters = {
     // 2026-09: the home composer stacks tiptap over a textarea that receives the text.
     input:['textarea.semi-input-textarea','textarea','[contenteditable="true"]'],
     editorHandoff:true,
+    // The new-chat page first mounts a placeholder textarea; text typed there before the tiptap editor loads
+    // can stay unsent (AI圆桌 Android 2026-09-23). Wait for the real editor when the placeholder is showing.
+    transitional:['textarea[data-testid="chat_input_input"]'],readyWhen:['.tiptap.ProseMirror[contenteditable="true"]'],
     // 2026-09-23: new conversations render send_message / receive_message with the message ID on
     // message_content; older conversations keep v_list_row[data-observe-row]. Support both.
     answer:['[data-testid="receive_message"]','[class*="v_list_row"][data-observe-row]:not(:has([class*="bg-g-send"]))','[data-role="assistant"]','[class*="assistant"] [class*="content"]'],

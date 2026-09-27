@@ -44,3 +44,18 @@ test('跳过的成员不阻塞讨论，换进来的新成员收到其他人的�
  assert(!prompts.deepseek.includes('DS_COMPLETE')&&prompts.deepseek.includes('DOUBAO_COMPLETE'));
  for(const p of Object.values(prompts))assert(!p.includes('KIMI_PARTIAL'));
 });
+test('讨论两种风格各自计轮；提示词要求在正文写完整；队长总结的开场白能被识别',async()=>{
+ const {looksLikePlaceholder}=await import('../src/core.js');
+ const s=seed(),r=makeRound('ask','问题',s);s.rounds.push(r);for(const j of r.jobs){j.status='done';j.text=j.provider+'_ANSWER';}
+ const debate=composePrompts('discuss','',s)[0].prompt,collab=composePrompts('discuss','',s,{style:'collab'})[0].prompt;
+ assert(debate.includes('这是第1轮辩论')&&debate.includes('指出你认同和不认同的地方')&&debate.includes('请直接在对话正文中完整写出你的回答'));
+ assert(collab.includes('这是第1轮协作')&&collab.includes('取长补短')===false&&collab.includes('整合各方优势')&&collab.includes('请直接在对话正文中完整写出你的回答'));
+ const d=makeRound('discuss','',s,{style:'collab'});assert.equal(d.style,'collab');s.rounds.push(d);for(const j of d.jobs){j.status='done';j.text=j.provider+'_2';}
+ assert(composePrompts('discuss','',s,{style:'collab'})[0].prompt.includes('这是第2轮协作'));
+ assert(composePrompts('discuss','',s)[0].prompt.includes('这是第1轮辩论'),'debate rounds count separately');
+ assert.equal(makeRound('ask','x',s).style,undefined);
+ const summary=composePrompts('summary','',s,{captain:'kimi'})[0].prompt;assert(summary.includes('请直接在对话正文中完整写出总结')&&summary.includes('未经核实之处请标明'));
+ assert(toMarkdown(s).includes('观点讨论（取长补短）'));
+ assert(looksLikePlaceholder('我将整理成文档。'));assert(looksLikePlaceholder('已为你生成总结文档，需要我压缩到 300 字吗？'.repeat(2)));
+ assert(!looksLikePlaceholder('共识：三家都认为需要分层管理，每位组长直接管理 5 到 7 人。分歧：是否设副组长。下一步：先按两层结构试运行一个月，再根据反馈调整。'));
+});
