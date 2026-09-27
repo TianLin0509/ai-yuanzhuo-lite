@@ -110,3 +110,24 @@ test('A late rejection from a stopped attempt cannot overwrite its newer retry',
  rejectFirst(Error('late old rejection'));await first;
  const latest=(await h.command({action:'state'})).session.rounds[0].jobs[0];assert.equal(latest.requestId,expected.requestId);assert.equal(latest.status,expected.status);assert.equal(latest.error,'');assert.equal(count,2);
 });
+test('A saved chat the site could not reopen is never sent to; retry continues in the new chat',async()=>{
+ const h=await harness({tabUrl:id=>id===1?'https://chat.deepseek.com/':'https://www.kimi.com/chat/original'});
+ const state=await h.command({action:'start',sessionId:h.s.id,kind:'iterate',text:'follow up'});
+ const ds=state.session.rounds.at(-1).jobs.find(j=>j.provider==='deepseek');
+ assert.equal(ds.status,'error');assert.equal(ds.phase,'not_sent');assert.match(ds.error,/新对话/);
+ assert(!h.calls.some(c=>c.type==='YZ_SEND'&&c.tabId===1),'nothing is typed into the fallen-back page');
+ assert.equal(state.session.bindings.deepseek.url,'https://chat.deepseek.com/');assert.match(state.session.bindings.deepseek.note,/没能回到/);
+ assert.equal(state.session.rounds[0].jobs.find(j=>j.provider==='deepseek').url,'https://chat.deepseek.com/a/chat/s/original','the record keeps the original chat address');
+});
+test('Sending and closing the same window at once: either the close is refused or nothing is sent',async()=>{
+ for(const order of ['start-first','close-first']){
+  const h=await harness(),removed=[];Object.assign(h.chrome.tabs,{query:async()=>[{id:1,windowId:1,url:'https://chat.deepseek.com/a/chat/s/original'},{id:2,windowId:1,url:'https://www.kimi.com/chat/original'},{id:9,windowId:1,url:'chrome-extension://test/main.html?session='+h.s.id}],remove:async ids=>{removed.push(...[ids].flat());},create:async t=>({id:50,...t})});
+  h.chrome.runtime.getURL=path=>'chrome-extension://test/'+path;
+  const start=()=>h.command({action:'start',windowId:1,sessionId:h.s.id,kind:'iterate',text:'race'}),close=()=>h.command({action:'close-here',windowId:1});
+  const [a,b]=await Promise.allSettled(order==='start-first'?[start(),close()]:[close(),start()]),[started,closed]=order==='start-first'?[a,b]:[b,a];
+  const sent=h.calls.some(c=>c.type==='YZ_SEND');
+  assert(!(closed.status==='fulfilled'&&sent),order+': a closed roundtable must not have sent');
+  if(closed.status==='fulfilled')assert.equal(started.status,'rejected',order+': start after close is refused');
+  if(sent)assert.equal(removed.length,0,order+': tabs in use are never closed');
+ }
+});

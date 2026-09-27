@@ -1,5 +1,5 @@
-import {PROVIDERS,MAX_MEMBERS,DISCUSSION_STYLES,ACTIVE,LABELS,busy,toMarkdown} from './core.js';
-import {escapeHtml,fmtTime,fmtDateGroup,renderMarkdown,roundMatches} from './view.js';
+import {PROVIDERS,MAX_MEMBERS,DISCUSSION_STYLES,ACTIVE,LABELS,busy,toMarkdown,presetView} from './core.js';
+import {escapeHtml,fmtTime,fmtDateGroup,fmtRelative,historyGroup,renderMarkdown,roundMatches} from './view.js';
 const $=s=>document.querySelector(s),$$=s=>[...document.querySelectorAll(s)],esc=escapeHtml;
 const main=document.body.dataset.surface==='main',kinds={ask:'同题提问',iterate:'独立迭代',discuss:'观点讨论',summary:'队长总结'};
 let windowId,model,reader={roundId:null,provider:'deepseek',pair:['deepseek','kimi'],expanded:[]},readerKey='',refreshTimer,noticeTimer,port;
@@ -9,7 +9,8 @@ const confirmedDrafts=new Map(),editorId=crypto.randomUUID();
 const latest=()=>model?.session.rounds.at(-1),selected=()=>model?.session.rounds.find(r=>r.id===reader.roundId)||latest();
 // Characters of the answer body, not counting whitespace; shown next to member names.
 const length=text=>String(text||'').replace(/\s/g,'').length;
-const placeholders={ask:'输入问题，原文完整发给每位成员。',iterate:'输入迭代要求，每家在自己的对话里改进。',discuss:'补充要求（可选）。每家会收到其他成员上一轮的完整回答。',summary:'补充要求（可选）。完整材料只交给队长。'};
+const placeholders={ask:'输入问题，原文完整发给每位成员。',iterate:'输入迭代要求，每家在自己的对话里改进。',discuss:'想额外强调的要求，可留空。',summary:'想额外强调的要求，可留空。'};
+const slotHelp={discuss:'{轮次引导} 会换成“这是第 N 轮…”；{队友回答} 会换成其他成员上一轮的完整回答，必须保留。',summary:'{总结要求} 随“深度”变化；{问题} 是上一轮的问题；{各家回答} 会换成全部完整回答，必须保留。'};
 const sendLabels={ask:'同题提问',iterate:'独立迭代',discuss:'发起讨论',summary:'请队长总结'};
 function error(text){$('#error-banner').textContent=text;$('#error-banner').hidden=!text;}
 function notice(text){$('#notice').textContent=text;$('#notice').hidden=false;clearTimeout(noticeTimer);noticeTimer=setTimeout(()=>$('#notice').hidden=true,4000);}
@@ -20,14 +21,14 @@ async function refresh(){
   if(refreshing){refreshAgain=true;return;}refreshing=true;
   try{
     const wanted=main&&!model?new URL(location.href).searchParams.get('session'):undefined;
-    const next=await request('state',wanted?{sessionId:wanted}:{}),changed=model?.session.id!==next.session.id;
+    const next=await request('state',{sessionId:wanted}),changed=model?.session.id!==next.session.id;
     const previousLatest=latest()?.id;
     if(model&&!changed&&reader.roundId===previousLatest)reader.roundId=next.session.rounds.at(-1)?.id||null;
     model=next;
     if(changed){readerKey='arena.reader.'+model.session.id;const data=await chrome.storage.local.get(readerKey);reader={roundId:null,provider:'deepseek',pair:['deepseek','kimi'],expanded:[],...data[readerKey]};viewSignature='';if(main)history.replaceState(null,'','main.html?session='+encodeURIComponent(model.session.id));}
     if(!model.session.rounds.some(r=>r.id===reader.roundId))reader.roundId=latest()?.id||null;
     if(!pendingDrafts)await recoverDraft();const acknowledged=confirmedDrafts.get(model.session.id);if(acknowledged&&(acknowledged.revision||0)>(model.draft.revision||0))model.draft=acknowledged;
-    document.title=model.session.title+' · AI圆桌lite';renderUpdate();renderController();if(main)renderMain();if(model.supportWarning)error(model.supportWarning);
+    document.title=model.session.title+' · AI圆桌lite';if($('#panel-title'))$('#panel-title').textContent=model.session.title;renderUpdate();renderController();if(main)renderMain();if(model.supportWarning)error(model.supportWarning);
   }catch(e){error(e.message);}finally{refreshing=false;if(refreshAgain){refreshAgain=false;scheduleRefresh();}}
 }
 // A newer build in the installed folder: offer an in-place reload (history and windows are kept).
@@ -49,12 +50,17 @@ function saveDraft(patch){
   write.then(result=>{pendingDrafts--;try{const pending=JSON.parse(localStorage.getItem(key)||'null');if(pending?.revision<=result.draft.lastInputRevision)localStorage.removeItem(key);}catch(e){error('草稿备份清理失败：'+e.message);}if(!pendingDrafts){model.draft=confirmedDrafts.get(model.session.id)||result.draft;renderController();}},e=>{pendingDrafts--;showDraftConflict(backup,'草稿保存失败，已保留本地备份：'+e.message);});draftQueue.catch(()=>{});return write;
 }
 function initController(){
-  $('#controller').innerHTML=`<section class="members"><div class="section-head"><strong>成员 <small id="member-count"></small></strong><span><button id="edit-members" class="link">编辑成员</button><button id="connect" class="link">连接网页</button></span></div><div id="member-strip"></div><p id="connection-hint" class="hint">先在各家网页完成登录，再开始圆桌。</p></section><section class="compose"><p class="base-round"><span id="base-time"></span>回看历史不会改变这里。</p><input type="hidden" id="kind" value="ask"><div id="kinds" class="seg modes" role="group" aria-label="下一轮做什么">${Object.entries(kinds).map(([v,n])=>`<button data-kind="${v}" aria-pressed="false">${n}</button>`).join('')}</div><div id="style-options" class="summary-options" hidden><span>讨论方式</span><input type="hidden" id="style" value="debate"><span id="styles" class="seg" role="group" aria-label="讨论方式">${Object.entries(DISCUSSION_STYLES).map(([v,n])=>`<button data-style="${v}" aria-pressed="false">${n}</button>`).join('')}</span></div><div id="summary-options" class="summary-options" hidden><label>队长<select id="captain">${Object.entries(PROVIDERS).map(([id,p])=>`<option value="${id}">${p.name}</option>`).join('')}</select></label><label>深度<select id="depth"><option>简要结论</option><option>深入分析</option></select></label></div><label for="prompt" id="prompt-label" class="sr-only">问题或补充要求</label><textarea id="prompt" rows="4"></textarea><div class="send-footer"><button id="preview" class="link">预览各家收到的内容</button><button id="send" class="primary"><span id="send-label">开始圆桌</span><kbd>Ctrl Enter</kbd></button></div><details class="support-note"><summary>后台回答说明</summary><p>回答期间 Chrome 会显示调试提示，用来保持后台成员网页更新；本轮结束自动释放。取消提示会中断后台支持，可核对网页后重新提取。</p></details></section>`;
+  $('#controller').innerHTML=`<section class="members"><div class="section-head"><strong>成员 <small id="member-count"></small></strong><span><button id="edit-members" class="link">编辑成员</button><button id="connect" class="link">连接网页</button></span></div><div id="member-strip"></div><p id="connection-hint" class="hint">先在各家网页完成登录，再开始圆桌。</p></section><section class="compose"><p class="base-round"><span id="base-time"></span>回看历史不会改变这里。</p><input type="hidden" id="kind" value="ask"><div id="kinds" class="seg modes" role="group" aria-label="下一轮做什么">${Object.entries(kinds).map(([v,n])=>`<button data-kind="${v}" aria-pressed="false">${n}</button>`).join('')}</div><div id="style-options" class="summary-options" hidden><span>讨论方式</span><input type="hidden" id="style" value="debate"><span id="styles" class="seg" role="group" aria-label="讨论方式">${Object.entries(DISCUSSION_STYLES).map(([v,n])=>`<button data-style="${v}" aria-pressed="false">${n}</button>`).join('')}</span></div><div id="summary-options" class="summary-options" hidden><label>队长<select id="captain">${Object.entries(PROVIDERS).map(([id,p])=>`<option value="${id}">${p.name}</option>`).join('')}</select></label><label>深度<select id="depth"><option>简要结论</option><option>深入分析</option></select></label></div><p id="plain-note" class="hint">原文完整发给每位成员，不附加任何预设。</p><div id="preset" class="preset" hidden><div class="preset-head"><span>预设提示词 · <span id="preset-name"></span></span><small id="preset-custom" hidden>已自定义</small><button id="edit-preset" class="link">编辑</button></div><div id="preset-body" class="preset-body"></div><div id="preset-editor" hidden><label for="preset-text" class="sr-only">编辑预设提示词</label><textarea id="preset-text" rows="7"></textarea><p id="preset-help" class="hint"></p><div class="preset-actions"><button id="preset-save" class="primary">保存预设</button><button id="preset-reset">恢复默认</button><button id="preset-cancel" class="link">取消</button></div></div></div><label for="prompt" id="prompt-label" class="sr-only">问题或补充要求</label><textarea id="prompt" rows="4"></textarea><div class="send-footer"><button id="preview" class="link">预览各家收到的内容</button><button id="send" class="primary"><span id="send-label">开始圆桌</span><kbd>Ctrl Enter</kbd></button></div><details class="support-note"><summary>后台回答说明</summary><p>回答期间 Chrome 会显示调试提示，用来保持后台成员网页更新；本轮结束自动释放。取消提示会中断后台支持，可核对网页后重新提取。</p></details></section>`;
   $('#prompt').addEventListener('input',()=>saveDraft({text:$('#prompt').value}));
   for(const id of ['captain','depth'])$('#'+id).addEventListener('change',()=>{saveDraft({[id]:$('#'+id).value});renderMode();});
   $('#styles').addEventListener('click',e=>{const b=e.target.closest('[data-style]');if(!b||b.disabled||$('#style').value===b.dataset.style)return;$('#style').value=b.dataset.style;saveDraft({style:b.dataset.style});renderMode();});
   $('#kinds').addEventListener('click',e=>{const b=e.target.closest('[data-kind]');if(!b||b.disabled||$('#kind').value===b.dataset.kind)return;$('#kind').value=b.dataset.kind;saveDraft({kind:b.dataset.kind});renderMode();});
   $('#send').addEventListener('click',send);
+  $('#edit-preset').addEventListener('click',()=>{const view=currentPreset();if(!view)return;$('#preset-editor').dataset.key=view.key;$('#preset-text').value=view.template;$('#preset-help').textContent=slotHelp[view.key.split('.')[0]]+'修改对之后所有圆桌生效。';$('#preset-editor').hidden=false;$('#preset-body').hidden=true;$('#edit-preset').hidden=true;$('#preset-text').focus();});
+  const closeEditor=()=>{$('#preset-editor').hidden=true;$('#preset-body').hidden=false;$('#edit-preset').hidden=false;};
+  $('#preset-cancel').addEventListener('click',closeEditor);
+  $('#preset-save').addEventListener('click',async()=>{if(await act('template',{key:$('#preset-editor').dataset.key,text:$('#preset-text').value})){closeEditor();notice('预设已保存，之后所有圆桌都用这一版。');}});
+  $('#preset-reset').addEventListener('click',async()=>{if(await act('template',{key:$('#preset-editor').dataset.key,text:null})){closeEditor();notice('已恢复默认预设。');}});
   $('#prompt').addEventListener('keydown',e=>{if(e.ctrlKey&&e.key==='Enter'&&!e.isComposing){e.preventDefault();send();}});
   $('#connect').addEventListener('click',()=>act('connect'));$('#edit-members').addEventListener('click',members);$('#preview').addEventListener('click',preview);
   $('#member-strip').addEventListener('click',e=>{const b=e.target.closest('[data-op]');if(!b||b.disabled)return;const p=b.dataset.provider,op=b.dataset.op,list=model.session.members;
@@ -66,7 +72,16 @@ function initController(){
     else{const j=latest()?.jobs.find(j=>j.provider===p);if(j)jobAction(j,op);}});
   if(!main)document.body.insertBefore($('.send-footer'),$('#dialog'));
 }
-function renderMode(){const kind=$('#kind').value;for(const b of $$('#kinds [data-kind]'))b.setAttribute('aria-pressed',String(b.dataset.kind===kind));$('#summary-options').hidden=kind!=='summary';$('#style-options').hidden=kind!=='discuss';for(const b of $$('#styles [data-style]'))b.setAttribute('aria-pressed',String(b.dataset.style===$('#style').value));$('#prompt').placeholder=placeholders[kind];$('#prompt-label').textContent=['ask','iterate'].includes(kind)?'问题或迭代要求':'补充要求（可选）';const active=busy(model?.session);$('#send').classList.toggle('stop',active);$('#send-label').textContent=active?'停止本轮':starting?'正在发起…':latest()?sendLabels[kind]:'开始圆桌';}
+function currentPreset(){return model?presetView($('#kind').value,model.session,{style:$('#style').value,depth:$('#depth').value,templates:model.templates||{}}):null;}
+function renderPreset(){
+  const view=currentPreset(),kind=$('#kind').value;$('#preset').hidden=!view;$('#plain-note').hidden=!!view||!['ask','iterate'].includes(kind);
+  $('#prompt-label').classList.toggle('sr-only',!view);$('#prompt-label').textContent=view?'你的补充（可选，附在预设之后）':'问题或迭代要求';
+  if(!view)return;$('#preset-name').textContent=view.name;$('#preset-custom').hidden=!view.custom;
+  // Editing one preset while switching to another would save the text under the wrong name.
+  if(!$('#preset-editor').hidden&&$('#preset-editor').dataset.key!==view.key)$('#preset-cancel').click();
+  const html=view.parts.map(p=>p.slot?`<span class="slot">${esc(p.slot)}</span>`:esc(p.text)).join('');if($('#preset-body')._html!==html){$('#preset-body')._html=html;$('#preset-body').innerHTML=html;}
+}
+function renderMode(){const kind=$('#kind').value;for(const b of $$('#kinds [data-kind]'))b.setAttribute('aria-pressed',String(b.dataset.kind===kind));$('#summary-options').hidden=kind!=='summary';$('#style-options').hidden=kind!=='discuss';for(const b of $$('#styles [data-style]'))b.setAttribute('aria-pressed',String(b.dataset.style===$('#style').value));$('#prompt').placeholder=placeholders[kind];renderPreset();const active=busy(model?.session);$('#send').classList.toggle('stop',active);$('#send-label').textContent=active?'停止本轮':starting?'正在发起…':latest()?sendLabels[kind]:'开始圆桌';}
 function renderController(){
   const s=model.session,r=latest(),active=busy(s),draft=model.draft;
   if(!pendingDrafts){for(const key of ['text','kind','captain','depth','style']){const el=$('#'+(key==='text'?'prompt':key));const value=draft[key]??({text:'',kind:'ask',captain:s.members[0],depth:'简要结论',style:'debate'}[key]);if(el.value!==value)el.value=value;}}
@@ -77,10 +92,10 @@ function renderController(){
     const j=r?.jobs.find(j=>j.provider===p),bound=s.bindings[p]?.tabId,status=j?LABELS[j.status]+(j.text?`，${length(j.text)} 字`:''):(bound?'网页已连接':'未连接'),dot=j?j.status:bound?'connected':'idle';const action=(op,label)=>`<button data-provider="${p}" data-op="${op}">${label}</button>`;
     let recovery='';if(j&&!ACTIVE.has(j.status)){recovery+=action('reread','重新提取');if(!['done','skipped'].includes(j.status))recovery+=action('retry','重试发送')+action('skip','跳过');if(j.status==='attention'&&j.text)recovery+=action('confirm','确认已完成');}
     const edit=`<button class="edit-op" data-provider="${p}" data-op="replace" title="换成其他 AI">换人</button>${s.members.length>2?`<button class="edit-op" data-provider="${p}" data-op="remove" title="从下一轮移出">移出</button>`:''}`;
-    return `<div class="member-row" data-status="${j?.status||'idle'}"><span class="dot" data-status="${dot}"></span><button class="member-chip ${bound?'connected':''}" data-provider="${p}" data-op="open" title="打开 ${PROVIDERS[p].name} 网页">${PROVIDERS[p].name}</button>${j?.mode?`<small class="mode" title="发送时网页显示的模型与模式">${esc(j.mode)}</small>`:''}<span class="state" data-status="${j?.status||'idle'}">${status}</span><span class="recovery">${recovery}${edit}</span>${j?.error?`<p class="member-error">${esc(j.error)}</p>`:''}</div>`;
+    return `<div class="member-row" data-status="${j?.status||'idle'}"><span class="dot" data-status="${dot}"></span><button class="member-chip ${bound?'connected':''}" data-provider="${p}" data-op="open" title="打开 ${PROVIDERS[p].name} 网页">${PROVIDERS[p].name}</button>${j?.mode?`<small class="mode" title="发送时网页显示的模型与模式">${esc(j.mode)}</small>`:''}<span class="state" data-status="${j?.status||'idle'}">${status}</span><span class="recovery">${recovery}${edit}</span>${j?.error?`<p class="member-error">${esc(j.error)}</p>`:''}${!j?.error&&s.bindings[p]?.note?`<p class="member-error">${esc(s.bindings[p].note)}</p>`:''}</div>`;
   }).join('')+(s.members.length<MAX_MEMBERS?`<button class="add-member" data-op="add">＋ 添加成员</button>`:'');}
   $('#member-count').textContent=`${s.members.length}/${MAX_MEMBERS}`;for(const b of $$('#member-strip .edit-op,#member-strip .add-member'))b.disabled=active;
-  $('#edit-members').disabled=active;$('#connect').disabled=active;$('#connection-hint').hidden=!!r;$('#send').disabled=starting&&!active;for(const b of $$('#kinds [data-kind]'))b.disabled=active;$('#preview').disabled=active;renderMode();
+  $('#edit-members').disabled=active;$('#connect').disabled=active;$('#connection-hint').hidden=!!r;$('#send').disabled=starting&&!active;for(const b of $$('#kinds [data-kind]'))b.disabled=active;$('#preview').disabled=active;$('#edit-preset').disabled=active;$('#close-roundtable').disabled=active;renderMode();
 }
 function renderMain(){
   if(document.hidden)return;
@@ -140,16 +155,38 @@ async function jobAction(j,operation){const args={roundId:latest().id,jobId:j.id
 }
 async function copy(text){try{await navigator.clipboard.writeText(text);notice('已复制完整内容。');}catch{dialog('选择全文复制',`<textarea class="copy-area" readonly>${esc(text)}</textarea>`);$('.copy-area').select();}}
 function download(session=model.session){const url=URL.createObjectURL(new Blob([toMarkdown(session)],{type:'text/markdown;charset=utf-8'})),a=document.createElement('a');a.href=url;a.download=new Date().toISOString().slice(0,10).replaceAll('-','')+'-AI圆桌-'+session.id.slice(0,8)+'.md';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
-async function historyList(){const data=await act('state');if(!data)return;dialog('历史圆桌',`<p>每场圆桌在自己的 Chrome 窗口打开，记录和草稿分别保存。</p><div class="history-list">${model.index.sessions.map(s=>`<div><button data-session="${s.id}">${esc(s.title)} <small>${s.rounds} 轮</small></button><button data-delete="${s.id}" aria-label="删除 ${esc(s.title)}">×</button></div>`).join('')}</div>`);}
+async function historyList(){
+  const data=await act('state');if(!data)return;const now=Date.now(),open=model.open||{},here=model.session.id;let group='';
+  // Roundtables that never got a question are not history, unless a window has one open right now.
+  const at=m=>m.activeAt||m.updatedAt,list=model.index.sessions.filter(m=>m.rounds>0||open[m.id]).sort((a,b)=>at(b)-at(a));
+  const rows=list.map(m=>{const g=historyGroup(at(m),now),head=g!==group?`<div class="date-group">${g}</div>`:'';group=g;
+    const members=(m.members||[]).map(p=>PROVIDERS[p]?.name).filter(Boolean).join('、'),other=open[m.id]&&m.id!==here;
+    const badge=m.id===here?'<span class="badge">当前</span>':other?'<span class="badge other">在其他窗口</span>':'';
+    const actions=m.id===here?'':other?`<button data-select="${m.id}">切换到该窗口</button>`:`<button data-open-here="${m.id}">本窗口打开</button><button data-select="${m.id}">新窗口</button><button data-delete="${m.id}" class="danger" aria-label="删除 ${esc(m.title)}">删除</button>`;
+    const created=m.createdAt?'创建于 '+new Date(m.createdAt).toLocaleString('zh-CN',{hour12:false}):'';
+    return head+`<div class="history-row${m.id===here?' current':''}"><div class="h-title"><span>${esc(m.title)}</span>${badge}</div><div class="h-meta"><time title="${created}">${fmtRelative(at(m),now)}</time><span>${m.rounds} 轮</span>${members?`<span>${esc(members)}</span>`:''}<span class="h-actions">${actions}</span></div></div>`;}).join('');
+  dialog('历史圆桌',`<p>所有窗口的圆桌都保存在这里。“本窗口打开”会先关闭当前圆桌，再打开当时各家的对话网页；“新窗口”在独立窗口打开。</p><div class="history-list">${rows||'<p class="hint">还没有提问过的圆桌。</p>'}</div>`);
+}
+function newRoundtable(){
+  const active=busy(model.session),names=model.session.members.map(p=>PROVIDERS[p].name).join('、');
+  dialog('新建圆桌',`<p>新圆桌沿用当前成员（${esc(names)}），并自动打开各家网页。</p><div class="choices"><button data-new="here" ${active?'disabled':''}><strong>在本窗口新建</strong><span>先关闭当前圆桌和它的 AI 网页，记录保留在历史</span></button><button data-new="window"><strong>在新窗口新建</strong><span>当前圆桌原样保留，两场各自独立</span></button></div>${active?'<p class="hint">本轮还在进行，只能在新窗口新建。</p>':''}`);
+}
+function closeRoundtable(){
+  const s=model.session;if(busy(s)){error('本轮还在进行，请先停止再关闭这场圆桌。');return;}
+  const tabs=s.members.filter(p=>s.bindings[p]?.tabId).map(p=>PROVIDERS[p].name);
+  dialog('关闭这场圆桌？',`<p>${tabs.length?`会关闭 ${esc(tabs.join('、'))} 的网页标签页。`:''}${s.rounds.length?'问答记录保留在“历史”里，之后可以找回并回到当时各家的对话。':'这场圆桌还没有提问，关闭后不留记录。'}</p><button id="close-confirm" class="primary">关闭圆桌</button>`);
+  $('#close-confirm').onclick=async()=>{close();if(await act('close-here'))notice(s.rounds.length?'已关闭，记录在“历史”里。':'已关闭。');};
+}
 $('#dialog-close').addEventListener('click',close);
-$('#dialog-body').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;if(b.dataset.session){close();act('select',{sessionId:b.dataset.session});}else if(b.dataset.delete){const sessionId=b.dataset.delete;dialog('删除这场圆桌？','<p>请先导出需要保留的记录。删除只影响扩展历史，原网页对话不受影响。</p><button id="delete-confirm">确认删除记录</button>');$('#delete-confirm').onclick=async()=>{close();await act('delete',{sessionId,confirm:true});};}});
+$('#dialog-body').addEventListener('click',async e=>{const b=e.target.closest('button');if(!b||b.disabled)return;if(b.dataset.new){close();const r=await act(b.dataset.new==='here'?'new-here':'new');if(r&&b.dataset.new==='here')notice('已新建，正在打开各家网页。');}else if(b.dataset.select){close();act('select',{sessionId:b.dataset.select});}else if(b.dataset.openHere){close();if(await act('open-here',{sessionId:b.dataset.openHere}))notice('已找回，正在打开当时的对话网页。');}else if(b.dataset.delete){const sessionId=b.dataset.delete;dialog('删除这场圆桌？','<p>请先导出需要保留的记录。删除只影响扩展历史，原网页对话不受影响。</p><button id="delete-confirm">确认删除记录</button>');$('#delete-confirm').onclick=async()=>{close();await act('delete',{sessionId,confirm:true});};}});
 initController();
 if(main){
   $('#layouts').addEventListener('click',e=>{const b=e.target.closest('[data-layout]');if(b)act('preferences',{layout:b.dataset.layout});});$('#time-search').addEventListener('input',()=>{if(model)renderMain();});
   $('#time-list').addEventListener('click',e=>{const b=e.target.closest('[data-round]');if(b){reader.roundId=b.dataset.round;persistReader();renderMain();$('#reader').scrollTop=0;}});$('#latest').onclick=()=>{reader.roundId=latest()?.id;persistReader();renderMain();};$('#source').onclick=e=>{const b=e.target.closest('[data-source]');if(b){reader.roundId=b.dataset.source;persistReader();renderMain();}};
   $('#reader').addEventListener('click',async e=>{const b=e.target.closest('button');if(!b)return;if(b.dataset.ai){reader.provider=b.dataset.ai;persistReader();renderMain();return;}const r=selected(),j=r?.jobs.find(j=>j.id===b.dataset.job);if(!j)return;if(b.dataset.read==='copy')copy(j.text);else if(b.dataset.read==='open')act('open-answer',{roundId:r.id,jobId:j.id});else if(b.dataset.read==='quote'){try{await draftQueue;if(await act('quote',{roundId:r.id,jobId:j.id}))notice('已将完整原文引用到下一轮草稿。');}catch(e){error(e.message);}}});
-  $('#new').onclick=()=>act('new');$('#history').onclick=historyList;$('#export').onclick=()=>download();$('#open-sidepanel').onclick=()=>chrome.sidePanel.open({windowId}).catch(e=>error('侧栏打开失败：'+e.message));
+  $('#export').onclick=()=>download();$('#open-sidepanel').onclick=()=>chrome.sidePanel.open({windowId}).catch(e=>error('侧栏打开失败：'+e.message));
 }else $('#open-main').onclick=()=>act('main');
+$('#new').onclick=newRoundtable;$('#history').onclick=historyList;$('#close-roundtable').onclick=closeRoundtable;
 $('#update').onclick=async()=>{const r=await act('update');if(r?.reloading)notice('正在更新，稍后会自动重新打开圆桌记录。');};
 async function panelVisibility(){if(!main)return;const data=await chrome.storage.session.get('arena.panel.'+windowId),open=!!data['arena.panel.'+windowId];$('#dock').hidden=open;$('#panel-active').hidden=!open;if(!open&&model)scheduleRefresh();}
 chrome.storage.onChanged.addListener((changes,area)=>{if(area==='session'&&changes['arena.panel.'+windowId])panelVisibility().catch(e=>error(e.message));if(area!=='local')return;const draft=changes['arena.draft.'+model?.session.id]?.newValue;if(draft&&model){const known=confirmedDrafts.get(model.session.id);if(!known||(draft.revision||0)>=(known.revision||0)){confirmedDrafts.set(model.session.id,draft);if(!pendingDrafts){model.draft=draft;renderController();}}}if(Object.keys(changes).some(k=>k==='arena.preferences'||k==='arena.index'||k==='arena.session.'+model?.session.id))scheduleRefresh();});

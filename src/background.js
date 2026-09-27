@@ -1,8 +1,8 @@
-import {PROVIDERS,DEFAULT_MEMBERS,ACTIVE,id,newSession,validMembers,makeRound,composePrompts,busy,providerFor,cleanUrl,sameConversation,acceptEvent,looksLikePlaceholder} from './core.js';
+import {PROVIDERS,DEFAULT_MEMBERS,MAX_SESSIONS,ACTIVE,id,newSession,validMembers,makeRound,composePrompts,busy,providerFor,cleanUrl,sameConversation,acceptEvent,looksLikePlaceholder,validateTemplate} from './core.js';
 import {createBackgroundSupport} from './background-support.js';
 import {createWorkspaces} from './workspaces.js';
 
-const INDEX='arena.index',PREFIX='arena.session.',ALARM='arena-active-recovery',MEMBERS='arena.members';
+const INDEX='arena.index',PREFIX='arena.session.',ALARM='arena-active-recovery',MEMBERS='arena.members',TEMPLATES='arena.templates';
 let index,queue=Promise.resolve(),supportWarning='';
 // build.json is written by scripts/build.mjs; an unpacked extension reads the current disk copy on fetch.
 const readBuild=async()=>{try{const r=await fetch(chrome.runtime.getURL('build.json'),{cache:'no-store'});return r.ok?await r.json():null;}catch{return null;}};
@@ -10,11 +10,15 @@ const runningBuild=readBuild();let diskBuild={at:0,value:null};
 async function buildInfo(){if(Date.now()-diskBuild.at>15000)diskBuild={at:Date.now(),value:await readBuild()};const running=await runningBuild,disk=diskBuild.value;return {running:running?.commit||'',available:disk&&running&&disk.builtAt!==running.builtAt?disk.commit:''};}const sessions=new Map(),nativePanelState=new Map();
 const run=fn=>{const operation=queue.then(fn);queue=operation.catch(()=>{});return operation;};
 async function loadSession(sessionId){if(!sessions.has(sessionId)){const data=await chrome.storage.local.get(PREFIX+sessionId);if(!data[PREFIX+sessionId])throw new Error('会话不存在，请刷新历史列表。');sessions.set(sessionId,data[PREFIX+sessionId]);}return sessions.get(sessionId);}
-async function save(session){session.updatedAt=Date.now();const next=structuredClone(index);const meta={id:session.id,title:session.title,updatedAt:session.updatedAt,rounds:session.rounds.length};next.sessions=next.sessions.filter(s=>s.id!==session.id);next.sessions.unshift(meta);await chrome.storage.local.set({[PREFIX+session.id]:session,[INDEX]:next});index=next;sessions.set(session.id,session);}
+async function save(session){session.updatedAt=Date.now();const next=structuredClone(index);const meta=summarize(session);next.sessions=next.sessions.filter(s=>s.id!==session.id);next.sessions.unshift(meta);await chrome.storage.local.set({[PREFIX+session.id]:session,[INDEX]:next});index=next;sessions.set(session.id,session);}
+// activeAt is the last question or answer: closing or reconnecting a roundtable does not make it look recent.
+function summarize(session){const createdAt=session.createdAt||session.updatedAt;return {id:session.id,title:session.title,createdAt,updatedAt:session.updatedAt,activeAt:Math.max(createdAt,...session.rounds.flatMap(r=>[r.createdAt||0,...r.jobs.map(j=>j.updatedAt||0)])),rounds:session.rounds.length,members:[...session.members]};}
 async function mutate(sessionId,fn){return run(async()=>{const copy=structuredClone(await loadSession(sessionId));const result=fn(copy);await save(copy);return result;});}
 async function init(){
   const data=await chrome.storage.local.get(INDEX);index=data[INDEX];
   if(!index){const session=newSession([...DEFAULT_MEMBERS]);index={schema:1,currentId:session.id,sessions:[]};await save(session);}
+  // Earlier builds kept only id/title/updatedAt/rounds; fill in the rest once, keeping the order and timestamps.
+  if(index.sessions.some(m=>!m.members||!m.activeAt)){const next=structuredClone(index);for(let i=0;i<next.sessions.length;i++){const m=next.sessions[i];if(m.members&&m.activeAt)continue;const data=await chrome.storage.local.get(PREFIX+m.id),full=data[PREFIX+m.id];if(full)next.sessions[i]={...summarize(full),updatedAt:m.updatedAt};}await chrome.storage.local.set({[INDEX]:next});index=next;}
   await chrome.sidePanel.setPanelBehavior({openPanelOnActionClick:true});
   const ephemeral=await chrome.storage.session.get(null),panelKeys=Object.keys(ephemeral).filter(k=>k.startsWith('arena.panel.'));
   const livePanels=chrome.runtime.getContexts?new Set((await chrome.runtime.getContexts({contextTypes:['SIDE_PANEL']})).map(c=>c.documentId)):new Set();
@@ -23,7 +27,7 @@ async function init(){
 const initialized=init();
 // The members last chosen by the user seed new roundtables; unknown or invalid saved sets fall back.
 let preferredMembers=[...DEFAULT_MEMBERS];const membersLoaded=chrome.storage.local.get(MEMBERS).then(data=>{if(validMembers(data[MEMBERS]))preferredMembers=data[MEMBERS];});
-async function createSession(members){return run(async()=>{if(index.sessions.length>=30)throw new Error('已保存 30 场圆桌。请先导出并删除旧记录。');const session=newSession(members);await save(session);return session;});}
+async function createSession(members){return run(async()=>{if(index.sessions.length>=MAX_SESSIONS)throw new Error(`已保存 ${MAX_SESSIONS} 场圆桌。请先导出并删除旧记录。`);const session=newSession(members);await save(session);return session;});}
 const workspaces=createWorkspaces(chrome,{loadSession,createSession,mutate,getIndex:()=>index,providers:PROVIDERS,defaultMembers:()=>preferredMembers,providerFor});
 const support=createBackgroundSupport(chrome,{onLost:async event=>{await initialized;await supportLost(event);},onError:error=>{supportWarning=error.message;console.error('[AI圆桌lite] 后台支持异常',error);}});
 const ready=Promise.all([initialized,support.ready,workspaces.ready,membersLoaded]);
@@ -31,6 +35,14 @@ function findJob(session,roundId,jobId){return session.rounds.find(r=>r.id===rou
 async function updateJob(ref,fn){return mutate(ref.sessionId,s=>{const job=findJob(s,ref.roundId,ref.jobId);if(!job)throw new Error('本轮任务已不存在。');if(ref.requestId&&job.requestId!==ref.requestId)return null;return fn(job,s);});}
 async function readJob(ref){const job=findJob(await loadSession(ref.sessionId),ref.roundId,ref.jobId);return ref.requestId&&job?.requestId!==ref.requestId?null:job;}
 async function supportedJob(ref){const job=await readJob(ref);if(!job||!ACTIVE.has(job.status))return null;if(!support.has(job.tabId,job.requestId))throw new Error('本轮后台支持已中断，尚未执行后续网页操作；请核对原网页。');await workspaces.validateTab(ref.sessionId,await chrome.tabs.get(job.tabId));return job;}
+async function removeSession(sessionId){await run(async()=>{if(!index.sessions.some(m=>m.id===sessionId))return;const next={...index,sessions:index.sessions.filter(m=>m.id!==sessionId)};if(next.currentId===sessionId)next.currentId=next.sessions[0].id;await chrome.storage.local.set({[INDEX]:next});index=next;await chrome.storage.local.remove([PREFIX+sessionId,'arena.draft.'+sessionId,'arena.reader.'+sessionId]);sessions.delete(sessionId);});}
+async function discardIfEmpty(sessionId){
+  // Owner check stays outside run(): workspaces may be waiting on run() to create a session.
+  if(!sessionId||await workspaces.owner(sessionId)||index.sessions.length<=1)return false;
+  const s=await loadSession(sessionId).catch(()=>null),draft=(await chrome.storage.local.get('arena.draft.'+sessionId))['arena.draft.'+sessionId];
+  if(!s||s.rounds.length||draft?.text?.trim())return false;
+  await removeSession(sessionId);return true;
+}
 async function requestActive(requestId){await queue;for(const meta of index.sessions){for(const round of (await loadSession(meta.id)).rounds)if(round.jobs.some(job=>(!requestId||job.requestId===requestId)&&ACTIVE.has(job.status)))return true;}return false;}
 let alarmQueue=Promise.resolve();
 function alarm(){const task=alarmQueue.then(async()=>{
@@ -50,13 +62,21 @@ function provisionalRecovery(provider,binding,url,job){
   if(provider!=='doubao'||job?.phase!=='attempted'||!/^block_[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(job.anchor?.key||'')||!job.anchor?.textHash||cleanUrl(job.url)!==cleanUrl(binding?.url))return false;
   try{const before=new URL(binding.url),after=new URL(url);return before.origin===after.origin&&/^\/chat\/local[_-][^/]+\/?$/.test(before.pathname)&&/^\/chat\/\d+\/?$/.test(after.pathname);}catch{return false;}
 }
+const LOST_CHAT='没能回到当时的对话：网站打开了新对话（常见于未登录或对话已删除）。旧回答仍在记录里；下一轮在新对话继续，这一家看不到之前的上下文。';
+function fellBack(provider,saved,here){const pattern=PROVIDERS[provider].conversation;try{return !!pattern&&providerFor(here)===provider&&pattern.test(new URL(saved).pathname)&&!pattern.test(new URL(here).pathname);}catch{return false;}}
 async function connection(sessionId,provider,{focus=false,verifyConversation=false,rereadJob=null}={}){
   const ownerWindow=await workspaces.requireWindow(sessionId);
   const session=await loadSession(sessionId);let tab=null,binding=session.bindings[provider];
   if(binding?.tabId){try{tab=await chrome.tabs.get(binding.tabId);}catch(error){if(!/No tab|Invalid tab/i.test(error.message))throw error;}}
   if(tab)await workspaces.validateTab(sessionId,tab);
   if(tab&&providerFor(tab.url||tab.pendingUrl)!==provider)throw new Error(`${PROVIDERS[provider].name} 的标签页已离开对应网站，请重新连接。`);
-  if(tab&&binding?.url&&verifyConversation&&!sameConversation(provider,tab.url||tab.pendingUrl,binding.url)&&!provisionalRecovery(provider,binding,tab.url||tab.pendingUrl,rereadJob))throw new Error('该标签页已切换到其他对话。请点“原网页”回到本轮绑定的对话，再重试。');
+  if(tab&&binding?.url&&verifyConversation&&!sameConversation(provider,tab.url||tab.pendingUrl,binding.url)&&!provisionalRecovery(provider,binding,tab.url||tab.pendingUrl,rereadJob)){
+    // A saved chat the site could not load (signed out, deleted) falls back to its new-chat page. Nothing is sent;
+    // the member continues in the new chat only after the user presses retry, knowing the context is gone.
+    const here=tab.url||tab.pendingUrl;
+    if(!rereadJob&&fellBack(provider,binding.url,here)){await mutate(sessionId,s=>{if(s.bindings[provider]?.tabId===tab.id)s.bindings[provider]={tabId:tab.id,url:here,note:LOST_CHAT};});throw Object.assign(new Error(`${PROVIDERS[provider].name} 网页没有停在原来的对话，打开的是新对话，本次没有发送。点“重试发送”会在新对话里继续，这一家看不到之前的上下文。`),{notSent:true});}
+    throw new Error('该标签页已切换到其他对话。请点“原网页”回到本轮绑定的对话，再重试。');
+  }
   if(!tab){tab=await chrome.tabs.create({windowId:ownerWindow,url:binding?.url||PROVIDERS[provider].url,active:focus});await mutate(sessionId,s=>{s.bindings[provider]={tabId:tab.id,url:tab.url||tab.pendingUrl||PROVIDERS[provider].url};});}
   if(focus){await chrome.tabs.update(tab.id,{active:true});await chrome.windows.update(tab.windowId,{focused:true});}
   return tab;
@@ -112,16 +132,64 @@ async function stopJob(ref,{skip=false}={}){
   if(job.tabId){try{const result=await pageMessage(job.tabId,{type:'YZ_STOP',requestId:job.requestId,stopGeneration:true});if(!result.pageStopped&&!skip)await updateJob(ref,j=>{j.error='已停止圆桌读取。原网页若仍在生成，可在原网页手动停止。';});}catch(error){await updateJob(ref,j=>{j.error='已停止圆桌读取；原网页未确认停止：'+error.message;});}}
   await releaseSupport(ref);
 }
-async function state(sessionId=index.currentId){await queue;const key='arena.draft.'+sessionId,data=await chrome.storage.local.get(['arena.preferences',key]);if(!data[key]){const legacy=await chrome.storage.session.get('draft.'+sessionId);if(typeof legacy['draft.'+sessionId]==='string')data[key]=await run(async()=>{const current=await chrome.storage.local.get(key);if(current[key])return current[key];const draft={text:legacy['draft.'+sessionId],kind:'ask',revision:Date.now()*1000,writer:'migration'};await chrome.storage.local.set({[key]:draft});return draft;});}return {index:structuredClone(index),session:structuredClone(await loadSession(sessionId)),providers:PROVIDERS,supportWarning,build:await buildInfo(),preferences:data['arena.preferences']||{layout:'a'},draft:data[key]||{text:'',kind:'ask',captain:'deepseek',depth:'简要结论',style:'debate'}};}
+const urlOnly=bindings=>Object.fromEntries(Object.entries(bindings||{}).map(([p,b])=>[p,{url:b.url}]));
+const mainPage=sessionId=>chrome.runtime.getURL('main.html')+'?session='+encodeURIComponent(sessionId);
+// Leaves this window's roundtable (record kept) and puts `next` (or a new empty one) in its place.
+async function switchWindow(windowId,next){
+  const currentId=await workspaces.ownerForWindow(windowId),current=currentId&&await loadSession(currentId);
+  if(current&&busy(current))throw new Error('本轮还在进行，请先停止再关闭这场圆桌。');
+  if(next){await loadSession(next);const holder=await workspaces.owner(next);if(holder&&holder!==windowId)throw new Error('这场圆桌已在另一个窗口打开，请从历史列表切到那个窗口。');if(busy(await loadSession(next)))throw new Error('这场圆桌还有进行中的回答，请在它的窗口停止后再打开。');}
+  if(next&&next===currentId)return next;
+  // A tab opened a moment ago may not have committed its address yet; it is still the one this roundtable opened.
+  const closing=[];
+  if(current)for(const [provider,binding] of Object.entries(current.bindings||{})){if(!binding.tabId)continue;try{const tab=await chrome.tabs.get(binding.tabId);const address=tab.url||tab.pendingUrl||'';if(tab.windowId===windowId&&(providerFor(address)===provider||/^(about:blank)?$/.test(address)))closing.push(tab.id);}catch(error){if(!/No tab|Invalid tab/i.test(error.message))throw error;}}
+  const target=next||(await createSession([...preferredMembers])).id;
+  // Reserve the window first. If another window takes `next` meanwhile, nothing here has changed yet.
+  try{await workspaces.assign(windowId,target);}catch(error){if(!next)await discardIfEmpty(target);throw error;}
+  if(current)await mutate(current.id,s=>{s.bindings=urlOnly(s.bindings);});
+  // Recovered bindings keep only the saved conversation URLs; stale tab IDs are never trusted.
+  if(next)await mutate(next,s=>{s.bindings=urlOnly(s.bindings);});
+  const tabs=await chrome.tabs.query({windowId}),mains=tabs.filter(t=>(t.url||t.pendingUrl||'').split(/[?#]/,1)[0]===chrome.runtime.getURL('main.html'));
+  for(const tab of mains)await chrome.tabs.update(tab.id,{url:mainPage(target)});
+  // Closing every tab would close the window (and its side panel), so keep the record page open.
+  if(!mains.length&&tabs.every(t=>closing.includes(t.id)))await chrome.tabs.create({windowId,url:mainPage(target),active:true});
+  if(closing.length)await chrome.tabs.remove(closing);
+  if(currentId)await discardIfEmpty(currentId);
+  return target;
+}
+// One switch per window at a time, including opening the new members: a double click must not interleave
+// two switches and leave the first one's freshly opened tabs behind.
+const windowSwitches=new Map();
+function perWindow(windowId,fn){const previous=windowSwitches.get(windowId)||Promise.resolve(),next=previous.catch(()=>{}).then(fn);windowSwitches.set(windowId,next);next.finally(()=>{if(windowSwitches.get(windowId)===next)windowSwitches.delete(windowId);}).catch(()=>{});return next;}
+async function openMembers(sessionId){const s=await loadSession(sessionId);for(const provider of s.members)await connection(sessionId,provider);}
+// After reopening saved conversations, check that each site really stayed there. A site that cannot load the
+// chat (signed out, chat deleted) sends the tab to a new chat; say so on the member row and continue there.
+async function verifyRecovered(sessionId){
+  const s=await loadSession(sessionId);
+  await Promise.all(s.members.map(async provider=>{
+    const b=s.bindings[provider],pattern=PROVIDERS[provider].conversation;let saved;
+    try{saved=new URL(b?.url);}catch{return;}
+    if(!b.tabId||!pattern?.test(saved.pathname))return;
+    // Watch the address rather than the load state: some sites keep loading long after they have redirected.
+    let url='';for(let i=0;i<120;i++){const tab=await chrome.tabs.get(b.tabId).catch(()=>null);if(!tab)return;url=tab.url||tab.pendingUrl||'';if(url&&!sameConversation(provider,url,b.url))break;await new Promise(r=>setTimeout(r,500));}
+    if(sameConversation(provider,url,b.url)||providerFor(url)!==provider)return;
+    const landing=fellBack(provider,b.url,url),note=landing?LOST_CHAT:'网站打开了另一个对话，不是当时那一个。请在网页核对后再继续。';
+    await mutate(sessionId,x=>{const now=x.bindings[provider];if(now?.tabId!==b.tabId)return;x.bindings[provider]=landing?{tabId:b.tabId,url,note}:{...now,note};});
+  }));
+}
+const verifyLater=sessionId=>{verifyRecovered(sessionId).catch(error=>console.info('[AI圆桌lite] 找回核对失败',error.message));};
+async function state(sessionId=index.currentId,windowId=null){await queue;const key='arena.draft.'+sessionId,data=await chrome.storage.local.get(['arena.preferences',key]);if(!data[key]){const legacy=await chrome.storage.session.get('draft.'+sessionId);if(typeof legacy['draft.'+sessionId]==='string')data[key]=await run(async()=>{const current=await chrome.storage.local.get(key);if(current[key])return current[key];const draft={text:legacy['draft.'+sessionId],kind:'ask',revision:Date.now()*1000,writer:'migration'};await chrome.storage.local.set({[key]:draft});return draft;});}const templates=(await chrome.storage.local.get(TEMPLATES))[TEMPLATES]||{};return {index:structuredClone(index),session:structuredClone(await loadSession(sessionId)),open:await workspaces.snapshot(),windowId,templates,providers:PROVIDERS,supportWarning,build:await buildInfo(),preferences:data['arena.preferences']||{layout:'a'},draft:data[key]||{text:'',kind:'ask',captain:'deepseek',depth:'简要结论',style:'debate'}};}
 async function command(message){
   let callerSessionId=message.sessionId||index.currentId;
   if(Number.isInteger(message.windowId)){
     const owned=await workspaces.claim(message.windowId,message.action==='state'?message.sessionId:undefined);
     callerSessionId=owned;
-    if(!['state','new','select','delete','preferences'].includes(message.action)&&message.sessionId&&message.sessionId!==owned)throw new Error('此操作属于另一场圆桌，已阻止跨窗口发送。');
-    if(message.action!=='select'&&message.action!=='delete')message={...message,sessionId:owned};
+    if(!['state','new','select','delete','preferences','template','close-here','new-here','open-here'].includes(message.action)&&message.sessionId&&message.sessionId!==owned)throw new Error('此操作属于另一场圆桌，已阻止跨窗口发送。');
+    if(!['select','delete','open-here'].includes(message.action))message={...message,sessionId:owned};
   }
-  const state=()=>globalState(callerSessionId);
+  // Window moves change the owner mid-command, so state follows the window rather than the old id.
+  const state=async()=>globalState(Number.isInteger(message.windowId)?await workspaces.ownerForWindow(message.windowId)||callerSessionId:callerSessionId,message.windowId??null);
+  const templates=async()=>(await chrome.storage.local.get(TEMPLATES))[TEMPLATES]||{};
   switch(message.action){
     case 'state':return state();
     case 'update':{
@@ -132,16 +200,27 @@ async function command(message){
     case 'preferences':{if(!['a','b','c'].includes(message.layout))throw new Error('未知阅读视图。');await chrome.storage.local.set({'arena.preferences':{layout:message.layout}});return state();}
     case 'draft':{const draft=await run(async()=>{const key='arena.draft.'+message.sessionId,data=await chrome.storage.local.get(key),draft=data[key]||{};if(message.revision&&message.revision<=(draft.lastInputRevision||0))return draft;if(message.baseRevision!==undefined&&message.baseRevision!==(draft.revision||0)&&message.writer!==draft.writer)throw new Error('草稿已在另一处改变。未保存的输入仍在本地备份中，请核对两份文字后再使用。');for(const k of ['text','kind','captain','depth','style'])if(typeof message.patch?.[k]==='string')draft[k]=message.patch[k];draft.revision=Math.max(Date.now()*1000,(draft.revision||0)+1,message.revision||0);draft.lastInputRevision=message.revision||draft.revision;draft.writer=message.writer||'command';await chrome.storage.local.set({[key]:draft});return draft;});return {sessionId:message.sessionId,draft};}
     case 'quote':{await run(async()=>{const s=await loadSession(message.sessionId),r=s.rounds.find(r=>r.id===message.roundId),j=r?.jobs.find(j=>j.id===message.jobId);if(!j?.text)throw new Error('这份回答暂无可引用的正文。');const key='arena.draft.'+s.id,data=await chrome.storage.local.get(key),draft=data[key]||{},stamp=new Date(r.createdAt).toLocaleString('zh-CN',{hour12:false});await chrome.storage.local.set({[key]:{...draft,text:(draft.text||'')+`\n\n【引用 ${stamp} · ${PROVIDERS[j.provider].name}】\n${j.text}\n【引用结束】`,revision:Math.max(Date.now()*1000,(draft.revision||0)+1),writer:'quote'}});});return state();}
-    case 'preview':{const s=await loadSession(message.sessionId);return {...await state(),prompts:composePrompts(message.kind,message.text,s,message.options),baseRoundId:s.rounds.at(-1)?.id||null};}
+    case 'preview':{const s=await loadSession(message.sessionId);return {...await state(),prompts:composePrompts(message.kind,message.text,s,{...message.options,templates:await templates()}),baseRoundId:s.rounds.at(-1)?.id||null};}
     case 'main':{const opened=await workspaces.main(message.sessionId);return {...await state(),opened};}
+    case 'template':{
+      // Presets are shared by every roundtable; null restores the built-in text.
+      await run(async()=>{const all=await templates();if(message.text===null)delete all[message.key];else all[message.key]=validateTemplate(message.key,message.text);await chrome.storage.local.set({[TEMPLATES]:all});});return state();
+    }
+    case 'close-here':{requireWindowId(message);await perWindow(message.windowId,()=>switchWindow(message.windowId,null));return state();}
+    case 'new-here':{requireWindowId(message);await perWindow(message.windowId,async()=>openMembers(await switchWindow(message.windowId,null)));return state();}
+    case 'open-here':{requireWindowId(message);const holder=await workspaces.owner(message.sessionId);if(holder&&holder!==message.windowId){const opened=await workspaces.main(message.sessionId);return {...await state(),opened};}await perWindow(message.windowId,async()=>openMembers(await switchWindow(message.windowId,message.sessionId)));verifyLater(message.sessionId);return state();}
     case 'new':{const session=await createSession(message.members||[...preferredMembers]);const opened=await workspaces.main(session.id);for(const provider of session.members)await connection(session.id,provider);return {...await state(),opened};}
-    case 'select':{await loadSession(message.sessionId);const opened=await workspaces.main(message.sessionId);const s=await loadSession(message.sessionId);for(const p of s.members)await connection(s.id,p);return {...await state(),opened};}
+    case 'select':{await loadSession(message.sessionId);const reopening=!await workspaces.owner(message.sessionId);const opened=await workspaces.main(message.sessionId);const s=await loadSession(message.sessionId);for(const p of s.members)await connection(s.id,p);if(reopening)verifyLater(s.id);return {...await state(),opened};}
     case 'members':{await mutate(message.sessionId,s=>{if(busy(s))throw new Error('请先等待或停止本轮，再更改成员。');newSession(message.members);s.members=message.members;});preferredMembers=[...message.members];await chrome.storage.local.set({[MEMBERS]:preferredMembers});return state();}
     case 'connect':{const s=await loadSession(message.sessionId);for(const provider of s.members){const binding=s.bindings[provider],windowId=await workspaces.owner(s.id);if(binding?.tabId&&windowId){let tab;try{tab=await chrome.tabs.get(binding.tabId);}catch(e){if(!/No tab|Invalid tab/i.test(e.message))throw e;}if(tab&&(tab.windowId!==windowId||providerFor(tab.url||tab.pendingUrl)!==provider)){if(busy(s))throw new Error('请先停止本轮，再重新连接已移动的成员。');await mutate(s.id,copy=>{copy.bindings[provider]={url:binding.url};});}}await connection(s.id,provider);}return state();}
     case 'open-answer':{const s=await loadSession(message.sessionId),r=s.rounds.find(r=>r.id===message.roundId),j=r?.jobs.find(j=>j.id===message.jobId);if(!j?.url||providerFor(j.url)!==j.provider)throw new Error('这份记录尚无可核对的原网页地址。');const windowId=await workspaces.owner(s.id),tabs=await chrome.tabs.query(windowId?{windowId}:{});const tab=tabs.find(t=>cleanUrl(t.url)===cleanUrl(j.url));if(tab)await chrome.tabs.update(tab.id,{active:true});else await chrome.tabs.create({...(windowId?{windowId}:{}),url:j.url,active:true});return state();}
     case 'open':{if(!PROVIDERS[message.provider])throw new Error('未知成员。');const session=await loadSession(message.sessionId);const bound=session.bindings[message.provider];const tab=await connection(session.id,message.provider,{focus:true});if(bound?.url&&cleanUrl(tab.url)!==cleanUrl(bound.url))await chrome.tabs.update(tab.id,{url:bound.url});return state();}
     case 'start':{
-      const round=await mutate(message.sessionId,s=>{if(message.baseRoundId!==undefined&&message.baseRoundId!==(s.rounds.at(-1)?.id||null))throw new Error('最新轮次已经改变，请核对侧栏后再发送。');const r=makeRound(message.kind,message.text,s,message.options);s.rounds.push(r);if(s.rounds.length===1)s.title=r.prompt.slice(0,32)||'新的圆桌';return structuredClone(r);});
+      const options={...message.options,templates:await templates()};
+      // Starting a round shares the window's switch queue, so closing or replacing this roundtable either sees
+      // the new round (and refuses) or runs first (and this start is refused), never half of each.
+      const create=async()=>{if(Number.isInteger(message.windowId)&&await workspaces.ownerForWindow(message.windowId)!==message.sessionId)throw new Error('这个窗口已换成另一场圆桌，本次没有发送。');return mutate(message.sessionId,s=>{if(message.baseRoundId!==undefined&&message.baseRoundId!==(s.rounds.at(-1)?.id||null))throw new Error('最新轮次已经改变，请核对侧栏后再发送。');const r=makeRound(message.kind,message.text,s,options);s.rounds.push(r);if(s.rounds.length===1)s.title=r.prompt.slice(0,32)||'新的圆桌';return structuredClone(r);});};
+      const round=await (Number.isInteger(message.windowId)?perWindow(message.windowId,create):create());
       await run(async()=>{const key='arena.draft.'+message.sessionId,data=await chrome.storage.local.get(key);if(data[key]?.text===message.text)await chrome.storage.local.set({[key]:{...data[key],text:'',revision:Math.max(Date.now()*1000,(data[key].revision||0)+1),writer:'sent'}});});
       await alarm();await Promise.all(round.jobs.map(j=>dispatch({sessionId:message.sessionId,roundId:round.id,jobId:j.id})));await alarm();return state();
     }
@@ -169,11 +248,12 @@ async function command(message){
         try{await support.acquire(tab.id,requestId,job.provider);if(!await supportedJob({...ref,requestId})){await support.release(tab.id,requestId);return state();}await inject(tab.id,job.provider);if(!await supportedJob({...ref,requestId})){await support.release(tab.id,requestId);return state();}await pageMessage(tab.id,{type:'YZ_REREAD',provider:job.provider,requestId,baseline:job.phase==='attempted'?job.baseline:null,url:job.url,prompt:job.prompt,anchor:force?null:job.anchor,force});}catch(error){await updateJob({...ref,requestId},j=>{if(ACTIVE.has(j.status)){j.status='attention';j.error=error.message;}});await releaseSupport({...ref,requestId});if(error.code==='NOT_OWNED'&&!force)forceable={jobId:job.id,provider:job.provider,question:error.question||''};}
       }else throw new Error('未知回答操作。');await alarm();return {...await state(),forceable};
     }
-    case 'delete':{const s=await loadSession(message.sessionId);if(busy(s))throw new Error('进行中的圆桌不能删除，请先停止。');if(await workspaces.owner(s.id))throw new Error('请先关闭这场圆桌的窗口，再从其他窗口删除历史。');if(!message.confirm)throw new Error('删除历史需要确认。');if(index.sessions.length===1)throw new Error('请先新建一场圆桌，再删除最后一条历史。');await run(async()=>{const next={...index,sessions:index.sessions.filter(m=>m.id!==s.id)};if(next.currentId===s.id)next.currentId=next.sessions[0].id;await chrome.storage.local.set({[INDEX]:next});index=next;await chrome.storage.local.remove([PREFIX+s.id,'arena.draft.'+s.id,'arena.reader.'+s.id]);sessions.delete(s.id);});return state();}
+    case 'delete':{const s=await loadSession(message.sessionId);if(busy(s))throw new Error('进行中的圆桌不能删除，请先停止。');if(await workspaces.owner(s.id))throw new Error('请先关闭这场圆桌的窗口，再从其他窗口删除历史。');if(!message.confirm)throw new Error('删除历史需要确认。');if(index.sessions.length===1)throw new Error('请先新建一场圆桌，再删除最后一条历史。');await removeSession(s.id);return state();}
     default:throw new Error('未知圆桌操作。');
   }
 }
 const globalState=state;
+function requireWindowId(message){if(!Number.isInteger(message.windowId))throw new Error('无法确认当前圆桌窗口，请重新打开界面。');}
 chrome.runtime.onMessage.addListener((message,sender,respond)=>{
   if(sender.id!==chrome.runtime.id)return false;
   if(message.type==='YZ_EVENT'){ready.then(()=>locateEvent(message,sender)).then(accepted=>respond({ok:true,accepted}),error=>respond({ok:false,error:error.message}));return true;}
@@ -192,7 +272,7 @@ chrome.runtime.onConnect?.addListener(port=>{
 });
 chrome.sidePanel.onOpened?.addListener(({windowId})=>{ready.then(()=>{closedPanels.delete(windowId);nativePanelState.set(windowId,true);return publishPanel(windowId);}).catch(e=>console.error('[AI圆桌lite] 侧栏打开状态保存失败',e));});
 chrome.sidePanel.onClosed?.addListener(({windowId})=>{ready.then(()=>{closedPanels.add(windowId);nativePanelState.set(windowId,false);return publishPanel(windowId);}).catch(e=>console.error('[AI圆桌lite] 侧栏关闭状态保存失败',e));});
-chrome.windows.onRemoved?.addListener(windowId=>{ready.then(async()=>{const sessionId=await workspaces.ownerForWindow(windowId);await workspaces.forget(windowId);if(sessionId){const s=await loadSession(sessionId);for(const r of s.rounds)for(const j of r.jobs)if(ACTIVE.has(j.status))await stopJob({sessionId,roundId:r.id,jobId:j.id});await alarm();}await chrome.storage.session.remove('arena.panel.'+windowId);}).catch(e=>console.error('[AI圆桌lite] 关闭窗口清理失败',e));});
+chrome.windows.onRemoved?.addListener(windowId=>{ready.then(async()=>{const sessionId=await workspaces.ownerForWindow(windowId);await workspaces.forget(windowId);if(sessionId){const s=await loadSession(sessionId);for(const r of s.rounds)for(const j of r.jobs)if(ACTIVE.has(j.status))await stopJob({sessionId,roundId:r.id,jobId:j.id});await alarm();await discardIfEmpty(sessionId);}await chrome.storage.session.remove('arena.panel.'+windowId);}).catch(e=>console.error('[AI圆桌lite] 关闭窗口清理失败',e));});
 chrome.alarms.onAlarm.addListener(event=>{if(event.name===ALARM)ready.then(recover).catch(error=>console.error('[AI圆桌lite] 恢复失败',error));});
 chrome.runtime.onInstalled.addListener(details=>{ready.then(()=>details.reason==='update'?workspaces.restoreAfterReload():null).catch(error=>console.error('[AI圆桌lite] 初始化失败',error));});
 chrome.runtime.onStartup.addListener(()=>{ready.then(recover).catch(error=>console.error('[AI圆桌lite] 启动恢复失败',error));});

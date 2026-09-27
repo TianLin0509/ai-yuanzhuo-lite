@@ -56,7 +56,7 @@ try{
   await until(()=>page.evaluate(()=>!!window.__stateHeld),'old state response held');await page.locator('#prompt').fill('新草稿不能被旧回包覆盖 512');await until(async()=>(await command(page,'state')).draft.text.endsWith('512'),'newer draft saved');await page.evaluate(()=>window.__releaseState());await until(async()=>(await page.locator('#prompt').inputValue()).endsWith('512'),'newer draft remains after old state');
   checks.push('Delayed stale state response cannot revert an acknowledged draft');
   await command(page,'connect',{sessionId:s.id});const firstState=await command(page,'state'),oldBindings=structuredClone(firstState.session.bindings),oldWindow=(await page.evaluate(()=>chrome.tabs.getCurrent())).windowId;
-  await page.locator('#new').click();let second;
+  await page.locator('#new').click();await page.locator('[data-new="window"]').click();let second;
   await until(async()=>{second=context.pages().find(p=>p!==page&&p.url().startsWith(base+'main.html?'));return !!second;},'new roundtable window');await second.waitForSelector('#prompt');
   const secondState=await command(second,'state');assert.notEqual(secondState.session.id,s.id);assert.equal(secondState.session.rounds.length,0);assert.equal(secondState.draft.text,'');
   await until(async()=>Object.keys((await command(second,'state')).session.bindings).length===3,'three own tabs');const secondWindow=(await second.evaluate(()=>chrome.tabs.getCurrent())).windowId;assert.notEqual(secondWindow,oldWindow);
