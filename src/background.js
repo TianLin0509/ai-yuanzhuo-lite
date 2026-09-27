@@ -64,6 +64,9 @@ function provisionalRecovery(provider,binding,url,job){
 }
 const LOST_CHAT='没能回到当时的对话：网站打开了新对话（常见于未登录或对话已删除）。旧回答仍在记录里；下一轮在新对话继续，这一家看不到之前的上下文。';
 function startedChat(provider,saved,here){const pattern=PROVIDERS[provider].conversation;try{return !!pattern&&providerFor(here)===provider&&!pattern.test(new URL(saved).pathname)&&pattern.test(new URL(here).pathname);}catch{return false;}}
+// After a send from a new-chat page the site moves to the chat it created. If reading then fails, record that
+// address now (the tab id is certainly valid in this browser session) so later reloads re-bind by exact address.
+async function followStartedChat(ref){try{const s=await loadSession(ref.sessionId),job=findJob(s,ref.roundId,ref.jobId),binding=s.bindings[job?.provider];if(!job?.tabId||job.phase!=='attempted'||binding?.tabId!==job.tabId)return;const tab=await chrome.tabs.get(job.tabId),here=tab.url||'';if(startedChat(job.provider,binding.url,here))await mutate(ref.sessionId,x=>{if(x.bindings[job.provider]?.tabId===tab.id)x.bindings[job.provider]={tabId:tab.id,url:here};});}catch(error){console.info('[AI圆桌lite] 未能记录新对话地址',error.message);}}
 function fellBack(provider,saved,here){const pattern=PROVIDERS[provider].conversation;try{return !!pattern&&providerFor(here)===provider&&pattern.test(new URL(saved).pathname)&&!pattern.test(new URL(here).pathname);}catch{return false;}}
 async function connection(sessionId,provider,{focus=false,verifyConversation=false,rereadJob=null}={}){
   const ownerWindow=await workspaces.requireWindow(sessionId);
@@ -109,7 +112,7 @@ async function dispatch(ref){
     await updateJob(ref,j=>{if(ACTIVE.has(j.status))j.phase='attempted';});
     job=await supportedJob(ref);if(!job){await support.release(tab.id,ref.requestId);return;}
     await pageMessage(tab.id,{type:'YZ_SEND',provider:job.provider,requestId:job.requestId,prompt:job.prompt,baseline:job.baseline});
-  }catch(error){await updateJob(ref,j=>{if(ACTIVE.has(j.status)){
+  }catch(error){await followStartedChat(ref);await updateJob(ref,j=>{if(ACTIVE.has(j.status)){
     // The page reports a failure before its Send click as definitely not sent, so a retry cannot duplicate it.
     if(error.notSent===true)j.phase='not_sent';
     j.status=j.phase==='attempted'?'attention':'error';j.error=error.message;j.updatedAt=Date.now();}});await releaseSupport(ref);}
@@ -137,11 +140,13 @@ async function advanceRelay(sessionId,roundId){
   if(jobId){await alarm();await dispatch({sessionId,roundId,jobId});await alarm();}
 }
 const advanceLater=(sessionId,roundId)=>{advanceRelay(sessionId,roundId).catch(error=>console.error('[AI圆桌lite] 工作流推进失败',error));};
-async function stopWaiting(sessionId,roundId){await mutate(sessionId,s=>{for(const j of s.rounds.find(r=>r.id===roundId)?.jobs||[])if(j.status==='waiting'){j.status='stopped';j.updatedAt=Date.now();}});}
+// Marks the round stopped in the same transaction, so a workflow turn being claimed right now either sees the mark
+// (and never starts) or was claimed first (and is then stopped with the other active members).
+async function stopWaiting(sessionId,roundId){await mutate(sessionId,s=>{const r=s.rounds.find(x=>x.id===roundId);if(!r)return;if(r.kind==='relay')r.stopped=true;for(const j of r.jobs)if(j.status==='waiting'){j.status='stopped';j.updatedAt=Date.now();}});}
 async function recover(){
   for(const meta of index.sessions){const session=await loadSession(meta.id);for(const round of session.rounds){for(const job of round.jobs){if(!ACTIVE.has(job.status)||Date.now()-job.updatedAt<45000)continue;
     let active=false;try{if(job.tabId&&support.has(job.tabId,job.requestId)){const result=await pageMessage(job.tabId,{type:'YZ_STATUS',requestId:job.requestId});active=result.active;}}catch(error){console.info('[AI圆桌lite] 恢复检查：',error.message);}
-    if(!active)await updateJob({sessionId:session.id,roundId:round.id,jobId:job.id,requestId:job.requestId},j=>{if(ACTIVE.has(j.status)){j.status='attention';j.error='网页或扩展连接已重启。请打开原网页并重新提取；不会自动重发。';}});
+    if(!active){await followStartedChat({sessionId:session.id,roundId:round.id,jobId:job.id});}if(!active)await updateJob({sessionId:session.id,roundId:round.id,jobId:job.id,requestId:job.requestId},j=>{if(ACTIVE.has(j.status)){j.status='attention';j.error='网页或扩展连接已重启。请打开原网页并重新提取；不会自动重发。';}});
   }}
     const last=session.rounds.at(-1);if(relayNext(last)>=0&&await workspaces.owner(session.id))advanceLater(session.id,last.id);
   }await alarm();
@@ -207,6 +212,7 @@ async function command(message){
     callerSessionId=owned;
     if(!['state','new','select','delete','preferences','template','close-here','new-here','open-here'].includes(message.action)&&message.sessionId&&message.sessionId!==owned)throw new Error('此操作属于另一场圆桌，已阻止跨窗口发送。');
     if(!['select','delete','open-here'].includes(message.action))message={...message,sessionId:owned};
+    const own=await loadSession(owned),last=own.rounds.at(-1);if(relayNext(last)>=0)advanceLater(owned,last.id);
   }
   // Window moves change the owner mid-command, so state follows the window rather than the old id.
   const state=async()=>globalState(Number.isInteger(message.windowId)?await workspaces.ownerForWindow(message.windowId)||callerSessionId:callerSessionId,message.windowId??null);
@@ -245,7 +251,7 @@ async function command(message){
       await run(async()=>{const key='arena.draft.'+message.sessionId,data=await chrome.storage.local.get(key);if(data[key]?.text===message.text)await chrome.storage.local.set({[key]:{...data[key],text:'',revision:Math.max(Date.now()*1000,(data[key].revision||0)+1),writer:'sent'}});});
       await alarm();await Promise.all(round.jobs.map(j=>dispatch({sessionId:message.sessionId,roundId:round.id,jobId:j.id})));await alarm();return state();
     }
-    case 'stop':{const s=await loadSession(message.sessionId),r=s.rounds.find(r=>r.id===message.roundId);if(!r)throw new Error('轮次不存在。');await stopWaiting(s.id,r.id);await Promise.all(r.jobs.filter(j=>ACTIVE.has(j.status)).map(j=>stopJob({sessionId:s.id,roundId:r.id,jobId:j.id})));await alarm();return state();}
+    case 'stop':{const s=await loadSession(message.sessionId),r=s.rounds.find(r=>r.id===message.roundId);if(!r)throw new Error('轮次不存在。');await stopWaiting(s.id,r.id);const fresh=(await loadSession(s.id)).rounds.find(x=>x.id===r.id);await Promise.all(fresh.jobs.filter(j=>ACTIVE.has(j.status)).map(j=>stopJob({sessionId:s.id,roundId:r.id,jobId:j.id})));await alarm();return state();}
     case 'job':{
       const ref={sessionId:message.sessionId,roundId:message.roundId,jobId:message.jobId},job=await readJob(ref);if(!job)throw new Error('回答不存在。');let forceable=null;
       ref.requestId=job.requestId;

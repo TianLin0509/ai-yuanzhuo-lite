@@ -131,3 +131,21 @@ test('Sending and closing the same window at once: either the close is refused o
   if(sent)assert.equal(removed.length,0,order+': tabs in use are never closed');
  }
 });
+test('A send from a new-chat page whose reading fails records the chat the site created, so a reload re-binds by address',async()=>{
+ let sent=false;
+ const h=await harness({configure:s=>{s.bindings.deepseek={tabId:1,url:'https://chat.deepseek.com/'};},tabUrl:id=>id===1?(sent?'https://chat.deepseek.com/a/chat/s/created-by-send':'https://chat.deepseek.com/'):'https://www.kimi.com/chat/original',
+  onSend:m=>{if(m.provider==='deepseek'){sent=true;throw Error('reading failed after the click');}return {ok:true};}});
+ const state=await h.command({action:'start',sessionId:h.s.id,kind:'iterate',text:'from a new chat'});
+ const ds=state.session.rounds.at(-1).jobs.find(j=>j.provider==='deepseek');assert.equal(ds.status,'attention');assert.equal(ds.phase,'attempted');
+ assert.equal(state.session.bindings.deepseek.url,'https://chat.deepseek.com/a/chat/s/created-by-send');assert.equal(state.session.bindings.deepseek.tabId,1);
+});
+test('Stopping a workflow while the next turn is being claimed: afterwards nothing is active or waiting and nothing more is sent',async()=>{
+ const h=await harness({configure:s=>{const r=core.makeRound('relay','relay question',s,{order:['deepseek','kimi']});r.jobs[0].status='done';r.jobs[0].text='DS';r.jobs[0].phase='attempted';s.rounds.push(r);}});
+ const round=h.s.rounds.at(-1);
+ await Promise.all([h.command({action:'state',windowId:1}),h.command({action:'stop',windowId:1,sessionId:h.s.id,roundId:round.id})]);
+ await new Promise(r=>setTimeout(r,50));const after=h.calls.length;
+ const st=await h.command({action:'state',windowId:1}),r=st.session.rounds.at(-1);
+ assert(r.stopped,'the round is marked stopped');assert(r.jobs.every(j=>!core.ACTIVE.has(j.status)&&j.status!=='waiting'),JSON.stringify(r.jobs.map(j=>j.status)));
+ await h.command({action:'state',windowId:1});await new Promise(r=>setTimeout(r,50));
+ assert.equal(h.calls.filter(c=>c.type==='YZ_SEND').length,h.calls.slice(0,after).filter(c=>c.type==='YZ_SEND').length,'no send after the stop');
+});

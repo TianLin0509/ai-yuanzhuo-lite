@@ -131,7 +131,7 @@ export function relayPrompt(round,index,templates={}){
 // Whose turn it is in a workflow round: the first waiting member, once everyone before it has finished or been
 // skipped. A member that failed or needs attention pauses the workflow until the user retries or skips it.
 export function relayNext(round){
-  if(round?.kind!=='relay'||round.jobs.some(j=>ACTIVE.has(j.status)))return -1;
+  if(round?.kind!=='relay'||round.stopped||round.jobs.some(j=>ACTIVE.has(j.status)))return -1;
   const index=round.jobs.findIndex(j=>j.status==='waiting');
   return index>0&&round.jobs.slice(0,index).every(j=>j.status==='done'||j.status==='skipped')?index:-1;
 }

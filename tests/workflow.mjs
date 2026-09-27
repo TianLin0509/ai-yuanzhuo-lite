@@ -73,6 +73,14 @@ try{
   await until(async()=>{const j=await latestJobs();return j.length===3&&j.every(x=>x.status==='done');},'next round completes for all members',60000);
   assert.equal(await sent('doubao'),'下一轮 Q3','our own leftover question is replaced, not sent');
   checks.push('After a skipped failure the next round completes for every member; our own unsent leftover is cleared');
+  // A draft the user types on the site is never cleared, even when it matches an earlier roundtable question.
+  await site.kimi.bringToFront();await site.kimi.locator('textarea').fill('下一轮 Q3');await page.bringToFront();
+  await sendReady();await page.locator('#prompt').fill('下一轮 Q3b');await page.locator('#send').click();
+  await until(async()=>{const j=await latestJobs();return j.length===3&&j.every(x=>!['queued','preparing','sending','sent','streaming','unconfirmed'].includes(x.status));},'Q3b settles',60000);
+  const kimiJob=(await latestJobs()).find(j=>j.provider==='kimi');assert.equal(kimiJob.status,'error');assert.match(kimiJob.error,/尚未发送的内容/);
+  assert.equal(await site.kimi.evaluate(()=>document.querySelector('textarea').value),'下一轮 Q3','the user’s own text stays in the box');
+  await site.kimi.locator('textarea').fill('');
+  checks.push('A draft typed by the user on the site is left alone even when it matches an earlier question');
 
   // 5. Stopping a workflow also stops members still waiting for their turn.
   await sendReady();await page.locator('[data-kind="relay"]').click();await site.deepseek.evaluate(()=>{window.__fixture.hold=true;});

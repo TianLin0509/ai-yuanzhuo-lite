@@ -2,6 +2,10 @@
   'use strict';
   if(globalThis.__yuanzhuoLite) return;
   const jobs=new Map();
+  // The question this script typed into the box and has not sent. Any real keystroke or paste by the user
+  // (a trusted input event) disowns it, so a draft the user typed is never cleared, even if the text matches.
+  let ownDraft=null,filling=false;
+  document.addEventListener('input',event=>{if(event.isTrusted&&!filling)ownDraft=null;},true);
   const diagnostics={observers:0,timers:0,reads:0,lastError:'',activeRequest:null};
   const cleanUrl=()=>location.origin+location.pathname;
   const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
@@ -186,7 +190,7 @@
     let leftover=normalized(value(input));const reuse=!!leftover&&!!message.prompt&&sameText(leftover,message.prompt);
     // An earlier round's own question that never went out (failed or skipped member) may still sit in the box.
     // It is ours, not the user's draft, so clear it rather than block every later round on this site.
-    if(leftover&&!reuse&&(message.stale||[]).some(old=>sameText(leftover,old))){clearInput(input);leftover=normalized(value(input));if(leftover)throw Object.assign(new Error('网页输入框里残留上一轮未发出的提问，未能清空。请在原网页删掉后重试。'),{notSent:true});}
+    if(leftover&&!reuse&&ownDraft&&sameText(leftover,ownDraft)&&(message.stale||[]).some(old=>sameText(leftover,old))){clearInput(input);leftover=normalized(value(input));if(leftover)throw Object.assign(new Error('网页输入框里残留上一轮未发出的提问，未能清空。请在原网页删掉后重试。'),{notSent:true});}
     if(leftover&&!reuse)throw new Error('该网页有尚未发送的内容。请先处理原网页草稿，再重试。');
     if(find(config.stop)||(config.busy&&find(config.busy)))throw new Error('该网页仍在生成其他回答，请等待结束。');
     // The mode caption is informational; a site change there must never block sending.
@@ -205,7 +209,7 @@
     job.navigationOpen=!job.boundConversation||/\/chat\/local[_-]/.test(location.pathname);
     jobs.set(job.requestId,job);
     try{
-      if(!reuse)await fill(input,message.prompt,config,()=>job.cancelled);if(job.cancelled)return {status:'stopped'};assertNoAttachments(config);
+      if(!reuse){filling=true;try{await fill(input,message.prompt,config,()=>job.cancelled);}finally{filling=false;}ownDraft=message.prompt;}if(job.cancelled)return {status:'stopped'};assertNoAttachments(config);
       let button=find(config.send);
       // Background tabs render slowly (Claude, ChatGPT): the button can appear seconds after the text.
       for(let i=0;i<40&&!available(button);i++){await sleep(200);if(job.cancelled)return {status:'stopped'};button=find(config.send);}
@@ -216,7 +220,7 @@
       if(!input.isConnected||find(config.input)!==input)throw new Error('发送前网页输入框已变化，已取消发送，请检查原网页。');
       if(cleanUrl()!==message.baseline.url)throw new Error('发送前网页对话已变化，已取消发送。');
       if(!sameText(value(input),message.prompt))throw new Error('发送前网页输入内容已变化，已取消发送，请检查原网页。');
-      job.dispatched=true;watch(job);button.click();job.sending=false;
+      ownDraft=null;job.dispatched=true;watch(job);button.click();job.sending=false;
       emit(job,'unconfirmed','', '已点击发送，正在核对网页响应；不要重复发送。');
       await sleep(450);inspect(job,true);
       return {status:job.status,phase:'attempted'};
