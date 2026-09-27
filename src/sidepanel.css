@@ -147,6 +147,18 @@ body:has(#error-banner:not([hidden])) .desktop{height:calc(100dvh - 84px)}
 .summary-options label{display:flex;align-items:center;gap:6px;color:var(--muted);font-size:12.5px}
 .summary-options select{height:28px;color:var(--ink)}
 #prompt{min-height:110px;flex:1}
+/* Preset (fixed part, grey) above the user's own text (white): the order they are sent in. */
+.preset{border:1px solid var(--line);border-radius:8px;background:var(--bg);padding:7px 10px 8px;font-size:12.5px;color:#4a5058}
+.preset-head{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:12px;margin-bottom:3px}
+.preset-head .link{margin-left:auto;font-size:12px}
+.preset-head small{color:var(--acc);background:var(--acc-soft);border-radius:4px;padding:0 5px}
+.preset-body{white-space:pre-wrap;line-height:1.65;max-height:32vh;overflow:auto;overflow-wrap:anywhere}
+.slot{display:inline-block;margin:2px 4px 0 0;padding:0 8px;border-radius:10px;background:var(--surface);border:1px dashed #9fc9b9;color:var(--acc);font-size:12px;line-height:20px;white-space:nowrap}
+#preset-text{font-size:12.5px;min-height:150px;resize:vertical}
+#preset-help{margin-top:4px}
+.preset-actions{display:flex;gap:10px;align-items:center;margin-top:6px}
+.preset-actions button{height:26px}
+#prompt-label:not(.sr-only){font-size:12px;font-weight:600;margin-bottom:-6px}
 .send-footer{display:flex;align-items:center;gap:10px}
 #send{margin-left:auto;height:34px;padding:0 16px;font-size:13px}
 #send.stop{background:#fff8f5;border-color:#f0c9b8;color:#b33d12}
@@ -156,7 +168,12 @@ body:has(#error-banner:not([hidden])) .desktop{height:calc(100dvh - 84px)}
 
 /* Side panel */
 [data-surface=panel]{height:100dvh;display:flex;flex-direction:column;overflow:hidden;min-width:280px}
-.panel-head{height:44px;flex:none;display:flex;align-items:center;gap:10px;padding:0 14px;border-bottom:1px solid var(--line)}
+.panel-head{height:40px;flex:none;display:flex;align-items:center;gap:8px;padding:0 6px 0 14px;border-bottom:1px solid var(--line)}
+/* Chrome's own panel header already names the extension, so this row names the roundtable and holds its actions. */
+.panel-title{flex:1;min-width:0;font-weight:600;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.toolbar{display:flex;flex:none}
+.toolbar button{height:26px;border:0;background:none;padding:0 7px;color:var(--muted)}
+.toolbar button:hover:not(:disabled){background:var(--bg);color:var(--ink)}
 [data-surface=panel] .controller{flex:1;min-height:0;display:flex;flex-direction:column;overflow:auto}
 [data-surface=panel] .members{padding:10px 14px;border-bottom:1px solid var(--line)}
 [data-surface=panel] .compose{flex:1;padding:12px 14px 10px}
@@ -190,9 +207,25 @@ dialog::backdrop{background:rgba(20,24,30,.28)}
 .member-options label{display:flex;align-items:center;gap:5px}
 .member-options label:has(input:disabled){opacity:.45}
 #member-limit{margin:-4px 0 12px}
-.history-list>div{display:flex;gap:6px;margin-bottom:6px}
-.history-list button:first-child{flex:1;text-align:left;overflow:hidden;text-overflow:ellipsis}
-.history-list small{color:var(--muted);margin-left:8px}
+.choices{display:grid;gap:8px}
+.choices button{height:auto;text-align:left;padding:10px 12px;display:flex;flex-direction:column;gap:2px;white-space:normal}
+.choices button strong{font-weight:600;font-size:13px}
+.choices button span{color:var(--muted);font-size:12px}
+.history-list .date-group{margin:10px 8px 2px}
+.history-row{padding:6px 8px;border-radius:6px}
+.history-row:hover{background:var(--bg)}
+.history-row.current{background:var(--acc-soft)}
+.h-title{display:flex;align-items:center;gap:8px;font-weight:500}
+.h-title span{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.badge{flex:none;font-size:11px;font-weight:400;color:var(--acc);border:1px solid #bcdccf;border-radius:4px;padding:0 5px}
+.badge.other{color:var(--muted);border-color:var(--line)}
+.h-meta{display:flex;flex-wrap:wrap;align-items:center;gap:2px 10px;color:var(--muted);font-size:12px}
+.h-meta time{font-variant-numeric:tabular-nums;color:var(--ink)}
+.h-actions{margin-left:auto;display:flex;gap:12px}
+.h-actions button{height:auto;border:0;background:none;padding:0;color:var(--acc);font-size:12px}
+.h-actions button:hover{text-decoration:underline;background:none}
+.h-actions .danger{color:var(--muted)}
+.h-actions .danger:hover{color:var(--warn)}
 #notice{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:var(--ink);color:#fff;padding:8px 16px;border-radius:8px;font-size:12.5px;z-index:20;width:max-content;max-width:90vw}
 
 @container (max-width:680px){
@@ -215,5 +248,9 @@ dialog::backdrop{background:rgba(20,24,30,.28)}
   .meta-row{flex-wrap:wrap}
   #layouts{margin-left:0}
   #dock{max-height:34vh}
+  /* Narrow record page: the actions matter more than the brand. */
+  .app-head{gap:6px;padding:0 10px}
+  .app-head .mark,.app-head .brand-name{display:none}
+  .app-head button{padding:0 7px}
 }
 @media (prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important}}

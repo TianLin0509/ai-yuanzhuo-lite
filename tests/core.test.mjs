@@ -12,7 +12,8 @@ test('三人讨论逐接收者仅转发另外两家的完整回答',()=>{
  for(const {provider,prompt} of composePrompts('discuss',guidance,s)){
   assert(!prompt.includes(texts[provider]),provider+' 不应收到自己的回答');
   for(const peer of expected[provider])assert(prompt.includes(texts[peer]),provider+' 应收到 '+peer+' 的完整回答');
-  assert(prompt.startsWith('用户补充要求：'+guidance+'\n\n'));
+  // The preset comes first and the user's supplement last, matching the side panel's preview order.
+  assert(prompt.endsWith('\n\n用户补充要求：\n'+guidance));assert(prompt.startsWith('这是第1轮辩论'));
   assert(prompt.includes('以下是其他 AI 对同一问题的回答，请分析他们的观点，指出你认同和不认同的地方，并给出你的改进回答。'));
   assert(prompt.includes('这是第1轮辩论。请仔细阅读其他参与者的初始回答，找出核心分歧和共识。'));
  }
@@ -58,4 +59,16 @@ test('讨论两种风格各自计轮；提示词要求在正文写完整；队�
  assert(toMarkdown(s).includes('观点讨论（取长补短）'));
  assert(looksLikePlaceholder('我将整理成文档。'));assert(looksLikePlaceholder('已为你生成总结文档，需要我压缩到 300 字吗？'.repeat(2)));
  assert(!looksLikePlaceholder('共识：三家都认为需要分层管理，每位组长直接管理 5 到 7 人。分歧：是否设副组长。下一步：先按两层结构试运行一个月，再根据反馈调整。'));
+});
+test('预设提示词：统一占位展示、可自定义、必须保留材料占位、单次替换',async()=>{
+ const {presetView,validateTemplate,DEFAULT_TEMPLATES}=await import('../src/core.js');
+ const s=seed(),r=makeRound('ask','原问题 {各家回答}',s);s.rounds.push(r);for(const j of r.jobs){j.status='done';j.text=j.provider+'_A {队友回答}';}
+ const view=presetView('discuss',s);assert.deepEqual(view.parts.filter(p=>p.slot).map(p=>p.slot),['队友1的回答','队友2的回答']);assert(view.parts[0].text.startsWith('这是第1轮辩论'));assert.equal(view.custom,false);
+ assert.equal(presetView('ask',s),null);assert.deepEqual(presetView('summary',s).parts.filter(p=>p.slot).map(p=>p.slot),['上一轮的问题','成员1的回答','成员2的回答','成员3的回答']);
+ assert.throws(()=>validateTemplate('discuss.debate','只要轮次 {轮次引导}'),/\{队友回答\}/);assert.throws(()=>validateTemplate('summary','  '),/不能为空/);assert.throws(()=>validateTemplate('nope','x'),/未知/);
+ const templates={'discuss.debate':'自定义开头\n{队友回答}'};
+ for(const {provider,prompt} of composePrompts('discuss','补充',s,{templates})){assert(prompt.startsWith('自定义开头\n【'));assert(prompt.endsWith('用户补充要求：\n补充'));assert(!prompt.includes(provider+'_A'));}
+ assert(composePrompts('discuss','',s,{style:'collab',templates})[0].prompt.startsWith('这是第1轮协作'),'a custom debate preset leaves the collab preset alone');assert(DEFAULT_TEMPLATES['discuss.collab'].includes('{队友回答}'));
+ // Answers and questions containing slot names are inserted verbatim, never expanded again.
+ const summary=composePrompts('summary','',s,{captain:'kimi'})[0].prompt;assert(summary.includes('原问题 {各家回答}'));assert(summary.includes('deepseek_A {队友回答}'));assert.equal(summary.split('--- DeepSeek ---').length,2);
 });

@@ -14,6 +14,8 @@ export const PROVIDERS = Object.freeze({
 // First-run members; afterwards new roundtables reuse the members the user last chose.
 export const DEFAULT_MEMBERS = Object.freeze(['deepseek','kimi','doubao']);
 export const MAX_MEMBERS = 3;
+// Saved roundtables across all windows (unlimitedStorage keeps full answers without the 10 MB quota).
+export const MAX_SESSIONS = 200;
 export function validMembers(members){return Array.isArray(members)&&members.length>=2&&members.length<=MAX_MEMBERS&&new Set(members).size===members.length&&members.every(k=>PROVIDERS[k]);}
 export const ACTIVE = new Set(['queued','preparing','sending','sent','streaming','unconfirmed']);
 export const LABELS = {queued:'准备连接',preparing:'检查网页',sending:'正在发送',sent:'等待回答',streaming:'正在回答',unconfirmed:'发送待确认',done:'已完成',attention:'需要确认',error:'需要处理',stopped:'已停止',skipped:'已跳过'};
@@ -53,7 +55,43 @@ const DISCUSSION_HINTS=[
   '这是第2轮辩论。经过上一轮交锋，请聚焦于仍存在分歧的关键点，深化你的论证或修正你的观点。',
   '这是第3轮辩论。辩论已进入深水区，请避免重复已达成共识的内容，集中攻克剩余分歧点，给出最终立场。'
 ];
-export function composePrompts(kind,text,session,{captain,depth='简要结论',style='debate'}={}){
+// Preset prompts are templates the user may edit (saved per kind). Slots are filled at send time; the
+// user's own supplement is always appended after the preset, which is also how the side panel shows it.
+const SUMMARY_DEPTH={'简要结论':'简要结论与可执行的下一步','深入分析':'深入分析（共识、分歧、依据、仍待确认的问题与建议）'};
+export const DEFAULT_TEMPLATES=Object.freeze({
+  'discuss.debate':`{轮次引导}\n\n${DISCUSSION_MAIN}${IN_BODY}\n\n{队友回答}`,
+  'discuss.collab':`{轮次引导}\n\n${COLLAB_MAIN}${IN_BODY}\n\n{队友回答}`,
+  summary:'请作为圆桌队长，总结以下讨论，输出{总结要求}。成员之间的一致意见同样需要依据，未经核实之处请标明。请直接在对话正文中完整写出总结。\n\n问题：\n{问题}\n\n{各家回答}'
+});
+export const TEMPLATE_NAMES=Object.freeze({'discuss.debate':'观点讨论 · 互挑错','discuss.collab':'观点讨论 · 取长补短',summary:'队长总结'});
+const REQUIRED_SLOTS={'discuss.debate':['{队友回答}'],'discuss.collab':['{队友回答}'],summary:['{各家回答}']};
+export function templateKey(kind,style){return kind==='discuss'?(style==='collab'?'discuss.collab':'discuss.debate'):kind==='summary'?'summary':null;}
+export function validateTemplate(key,text){
+  if(!DEFAULT_TEMPLATES[key])throw new Error('未知的预设提示词。');
+  if(typeof text!=='string'||!text.trim())throw new Error('预设提示词不能为空；要恢复默认请点“恢复默认”。');
+  const missing=REQUIRED_SLOTS[key].filter(slot=>!text.includes(slot));
+  if(missing.length)throw new Error(`预设提示词必须保留 ${missing.join('、')}，否则各家收不到讨论材料。`);
+  return text;
+}
+// Single pass, so a question or answer that happens to contain "{各家回答}" is never substituted again.
+const fill=(template,values)=>template.replace(/\{(轮次引导|队友回答|总结要求|问题|各家回答)\}/g,(slot,name)=>name in values?values[name]:slot);
+function roundHint(session,style){
+  const collab=style==='collab',number=session.rounds.filter(r=>r.kind==='discuss'&&(r.style||'debate')===(collab?'collab':'debate')).length+1;
+  return collab?COLLAB_HINTS[number-1]||`这是第${number}轮协作。请继续整合，聚焦尚未完善的部分。`:DISCUSSION_HINTS[number-1]||`这是第${number}轮辩论。请只针对仍有分歧的核心问题发表精炼观点。`;
+}
+// One unified view of the preset for display: every recipient's answers become "队友1的回答"… slots.
+export function presetView(kind,session,{style='debate',depth='简要结论',templates={}}={}){
+  const key=templateKey(kind,style);if(!key)return null;
+  const template=templates[key]||DEFAULT_TEMPLATES[key],latest=session.rounds.at(-1),answers=latest?.jobs.filter(j=>j.status==='done'&&j.text)||[];
+  const peers=Math.max(0,...session.members.map(m=>answers.filter(a=>a.provider!==m).length));
+  const slots={'{队友回答}':Array.from({length:peers||2},(_,i)=>`队友${i+1}的回答`),'{各家回答}':Array.from({length:answers.length||2},(_,i)=>`成员${i+1}的回答`),'{问题}':['上一轮的问题']};
+  const text=fill(template,{轮次引导:roundHint(session,style),总结要求:SUMMARY_DEPTH[depth]||SUMMARY_DEPTH['简要结论']});
+  const parts=[];let rest=text;
+  while(rest){const hit=Object.keys(slots).map(s=>[s,rest.indexOf(s)]).filter(([,i])=>i>=0).sort((a,b)=>a[1]-b[1])[0];
+    if(!hit){parts.push({text:rest});break;}parts.push({text:rest.slice(0,hit[1])});for(const label of slots[hit[0]])parts.push({slot:label});rest=rest.slice(hit[1]+hit[0].length);}
+  return {key,name:TEMPLATE_NAMES[key],custom:!!templates[key],template,parts:parts.filter(p=>p.slot||p.text)};
+}
+export function composePrompts(kind,text,session,{captain,depth='简要结论',style='debate',templates={}}={}){
   if(!['ask','iterate','discuss','summary'].includes(kind))throw new Error('不支持的圆桌操作。');
   if(typeof text!=='string')throw new Error('问题必须是文字。');
   const latest=session.rounds.at(-1),answers=latest?.jobs.filter(j=>j.status==='done'&&j.text)||[];
@@ -64,12 +102,12 @@ export function composePrompts(kind,text,session,{captain,depth='简要结论',s
   const targets=kind==='summary'?[captain]:session.members;
   const prompts=targets.map(provider=>{
     let prompt=text;
+    const supplement=text.trim()?`\n\n用户补充要求：\n${text}`:'';
     if(kind==='discuss'){
-      const collab=style==='collab',peers=answers.filter(a=>a.provider!==provider),number=session.rounds.filter(r=>r.kind==='discuss'&&(r.style||'debate')===(collab?'collab':'debate')).length+1;
-      const hint=collab?COLLAB_HINTS[number-1]||`这是第${number}轮协作。请继续整合，聚焦尚未完善的部分。`:DISCUSSION_HINTS[number-1]||`这是第${number}轮辩论。请只针对仍有分歧的核心问题发表精炼观点。`;
-      prompt=`${text?'用户补充要求：'+text+'\n\n':''}${hint}\n\n${collab?COLLAB_MAIN:DISCUSSION_MAIN}${IN_BODY}\n\n${peers.map(a=>`【${PROVIDERS[a.provider].name} 的回答】:\n${a.text}`).join('\n\n')}`;
+      const key=templateKey(kind,style),peers=answers.filter(a=>a.provider!==provider);
+      prompt=fill(templates[key]||DEFAULT_TEMPLATES[key],{轮次引导:roundHint(session,style),队友回答:peers.map(a=>`【${PROVIDERS[a.provider].name} 的回答】:\n${a.text}`).join('\n\n')})+supplement;
     }
-    if(kind==='summary')prompt=`请作为圆桌队长，总结以下讨论，输出${depth==='深入分析'?'深入分析（共识、分歧、依据、仍待确认的问题与建议）':'简要结论与可执行的下一步'}。成员之间的一致意见同样需要依据，未经核实之处请标明。请直接在对话正文中完整写出总结。\n\n问题：\n${latest.prompt}\n\n${answers.map(a=>`--- ${PROVIDERS[a.provider].name} ---\n${a.text}`).join('\n\n')}\n\n${text?'用户补充要求：\n'+text:''}`;
+    if(kind==='summary')prompt=fill(templates.summary||DEFAULT_TEMPLATES.summary,{总结要求:SUMMARY_DEPTH[depth]||SUMMARY_DEPTH['简要结论'],问题:latest.prompt,各家回答:answers.map(a=>`--- ${PROVIDERS[a.provider].name} ---\n${a.text}`).join('\n\n')})+supplement;
     if(prompt.length>MAX_PROMPT)throw new Error(`完整上下文超过 ${MAX_PROMPT.toLocaleString()} 字符，尚未发送。请导出后缩短材料或另开圆桌；不会自动截断。`);
     return {provider,prompt};
   });

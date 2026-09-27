@@ -110,3 +110,12 @@ test('A late rejection from a stopped attempt cannot overwrite its newer retry',
  rejectFirst(Error('late old rejection'));await first;
  const latest=(await h.command({action:'state'})).session.rounds[0].jobs[0];assert.equal(latest.requestId,expected.requestId);assert.equal(latest.status,expected.status);assert.equal(latest.error,'');assert.equal(count,2);
 });
+test('A saved chat the site could not reopen is never sent to; retry continues in the new chat',async()=>{
+ const h=await harness({tabUrl:id=>id===1?'https://chat.deepseek.com/':'https://www.kimi.com/chat/original'});
+ const state=await h.command({action:'start',sessionId:h.s.id,kind:'iterate',text:'follow up'});
+ const ds=state.session.rounds.at(-1).jobs.find(j=>j.provider==='deepseek');
+ assert.equal(ds.status,'error');assert.equal(ds.phase,'not_sent');assert.match(ds.error,/新对话/);
+ assert(!h.calls.some(c=>c.type==='YZ_SEND'&&c.tabId===1),'nothing is typed into the fallen-back page');
+ assert.equal(state.session.bindings.deepseek.url,'https://chat.deepseek.com/');assert.match(state.session.bindings.deepseek.note,/没能回到/);
+ assert.equal(state.session.rounds[0].jobs.find(j=>j.provider==='deepseek').url,'https://chat.deepseek.com/a/chat/s/original','the record keeps the original chat address');
+});

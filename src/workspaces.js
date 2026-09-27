@@ -1,5 +1,5 @@
 // Window ownership is browser-session state. Durable answers never depend on a tab ID.
-import {cleanUrl,DEFAULT_MEMBERS} from './core.js';
+import {cleanUrl,DEFAULT_MEMBERS,MAX_SESSIONS} from './core.js';
 export function createWorkspaces(chrome, {loadSession, createSession, mutate, getIndex, providers, defaultMembers, providerFor}) {
   const key='arena.windows'; let owners={}, queue=Promise.resolve(),openQueue=Promise.resolve();
   const ready=chrome.storage.session.get(key).then(data=>{owners=data[key]||{};});
@@ -47,7 +47,7 @@ export function createWorkspaces(chrome, {loadSession, createSession, mutate, ge
         for(const binding of bindings){if(!Number.isInteger(binding.tabId)){belongs=false;continue;}try{const tab=await chrome.tabs.get(binding.tabId);if(tab.windowId!==windowId)belongs=false;}catch(e){if(!/No tab|Invalid tab/i.test(e.message))throw e;belongs=false;}}
         // Capacity must never lock users out of the history needed to free space.
         const closedHistory=getIndex().sessions?.find(s=>!Object.values(owners).includes(s.id));
-        sessionId=belongs?old.id:getIndex().sessions?.length>=30&&closedHistory?closedHistory.id:(await createSession([...(typeof defaultMembers==='function'?defaultMembers():defaultMembers||DEFAULT_MEMBERS)])).id;
+        sessionId=belongs?old.id:getIndex().sessions?.length>=MAX_SESSIONS&&closedHistory?closedHistory.id:(await createSession([...(typeof defaultMembers==='function'?defaultMembers():defaultMembers||DEFAULT_MEMBERS)])).id;
       }
       const session=await loadSession(sessionId);
       // Browser restarts can reuse numeric tab IDs. Match saved conversation URLs
@@ -65,6 +65,18 @@ export function createWorkspaces(chrome, {loadSession, createSession, mutate, ge
       return sessionId;
     });
   }
+  // Moves this window to another roundtable (close / new / recover in place). Tabs are handled by the caller.
+  async function assign(windowId,sessionId){
+    await ready;
+    return serial(async()=>{
+      await prune();await loadSession(sessionId);
+      const holder=Object.keys(owners).find(k=>owners[k]===sessionId);
+      if(holder&&Number(holder)!==windowId)throw new Error('这场圆桌已在另一个窗口打开，请从历史列表切到那个窗口。');
+      const previous=owners[windowId]||null;await persist({...owners,[windowId]:sessionId});return previous;
+    });
+  }
+  // sessionId -> windowId for every open roundtable, so history can show where each one lives.
+  async function snapshot(){await ready;await queue;return Object.fromEntries(Object.entries(owners).map(([win,id])=>[id,Number(win)]));}
   async function owner(sessionId){await ready;await queue;return Number(Object.keys(owners).find(k=>owners[k]===sessionId))||null;}
   async function assertOwner(windowId,sessionId){const actual=await claim(windowId);if(actual!==sessionId)throw new Error('此操作属于另一场圆桌，已阻止跨窗口发送。请回到对应窗口。');}
   async function openMain(sessionId){
@@ -102,5 +114,5 @@ export function createWorkspaces(chrome, {loadSession, createSession, mutate, ge
     }
     return reopened;
   }
-  return {ready,claim,owner,ownerForWindow,requireWindow,assertOwner,main,forget,validateTab,restoreAfterReload};
+  return {ready,claim,assign,snapshot,owner,ownerForWindow,requireWindow,assertOwner,main,forget,validateTab,restoreAfterReload};
 }
