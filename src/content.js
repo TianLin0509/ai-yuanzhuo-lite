@@ -191,7 +191,9 @@
     // An earlier round's own question that never went out (failed or skipped member) may still sit in the box.
     // It is ours, not the user's draft, so clear it rather than block every later round on this site.
     if(leftover&&!reuse&&ownDraft&&sameText(leftover,ownDraft)&&(message.stale||[]).some(old=>sameText(leftover,old))){clearInput(input);leftover=normalized(value(input));if(leftover)throw Object.assign(new Error('网页输入框里残留上一轮未发出的提问，未能清空。请在原网页删掉后重试。'),{notSent:true});}
-    if(leftover&&!reuse)throw new Error('该网页有尚未发送的内容。请先处理原网页草稿，再重试。');
+    // The user saw this exact text in the side panel and chose to clear it: remove only that text.
+    if(leftover&&!reuse&&message.clearDraft&&sameText(leftover,message.clearDraft)){clearInput(input);leftover=normalized(value(input));if(leftover)throw Object.assign(new Error('网页输入框未能清空，请在原网页删掉后重试。'),{notSent:true});}
+    if(leftover&&!reuse)throw Object.assign(new Error('该网页有尚未发送的内容。请先处理原网页草稿，再重试。'),{code:'PAGE_DRAFT',question:leftover});
     if(find(config.stop)||(config.busy&&find(config.busy)))throw new Error('该网页仍在生成其他回答，请等待结束。');
     // The mode caption is informational; a site change there must never block sending.
     let mode='';try{mode=readMode(config);}catch(error){console.info('[AI圆桌lite] 模式读取失败',error.message);}

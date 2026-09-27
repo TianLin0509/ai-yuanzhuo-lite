@@ -11,4 +11,4 @@
 - 全部离线合并检查：`npm run check`；真实网站实测另用 `npm run browser:live`，登录由用户完成。fixture 通过不代表真实网站通过。
 - 不关闭用户浏览器或生产 AI Hub；浏览器 Profile 在 C:\VibeData\BrowserProfiles\AI-Yuanzhuo-Lite，测试浏览器只使用自身记录的 PID/端口。
 - 测试输出放 artifacts/，文件名带日期与席位。不得提交 Profile、Cookie、登录截图、用户对话或 .env。
-- AGENTS.md、CLAUDE.md、GEMINI.md 保持一致。版本只在明确发布时修改，普通合并不自动发布。
+- AGENTS.md、CLAUDE.md、GEMINI.md 保持一致。每次交付给用户的合并都抬版本号（任务分支同时改 src/manifest.json、package.json 与 package-lock.json；新功能升次版本、修复升修订号），界面显示版本；推送 GitHub 与对外发布仍需用户授权（2026-09-27 用户要求）。

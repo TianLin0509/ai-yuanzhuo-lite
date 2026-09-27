@@ -79,7 +79,11 @@ try{
   await until(async()=>{const j=await latestJobs();return j.length===3&&j.every(x=>!['queued','preparing','sending','sent','streaming','unconfirmed'].includes(x.status));},'Q3b settles',60000);
   const kimiJob=(await latestJobs()).find(j=>j.provider==='kimi');assert.equal(kimiJob.status,'error');assert.match(kimiJob.error,/尚未发送的内容/);
   assert.equal(await site.kimi.evaluate(()=>document.querySelector('textarea').value),'下一轮 Q3','the user’s own text stays in the box');
-  await site.kimi.locator('textarea').fill('');
+  // The user may clear it from the side panel after seeing exactly what will be removed.
+  await page.locator('.member-row [data-provider="kimi"][data-op="cleardraft"]').click();await page.waitForSelector('.draft-preview');
+  assert.equal(await page.locator('.draft-preview').innerText(),'下一轮 Q3');await page.locator('#confirm-clear').click();
+  await until(async()=>(await latestJobs()).find(j=>j.provider==='kimi').status==='done','kimi retried after the user cleared its box',40000);
+  assert.equal(await sent('kimi'),'下一轮 Q3b','only the confirmed text was removed, then this round was sent');
   checks.push('A draft typed by the user on the site is left alone even when it matches an earlier question');
 
   // 5. Stopping a workflow also stops members still waiting for their turn.
@@ -88,7 +92,7 @@ try{
   await until(async()=>(await latestJobs())[0].status==='sent'||(await latestJobs())[0].status==='streaming','first member answering');
   await page.locator('#send').click();
   await until(async()=>(await latestJobs()).every(j=>['stopped'].includes(j.status)),'every member stopped');
-  assert.equal(await sent('kimi'),'下一轮 Q3','no later member was sent anything');
+  assert.equal(await sent('kimi'),'下一轮 Q3b','no later member was sent anything');
   checks.push('Stopping a workflow stops the waiting members too');
 
   await page.screenshot({path:path.join(out,'20260927-workflow-claude.png')});
