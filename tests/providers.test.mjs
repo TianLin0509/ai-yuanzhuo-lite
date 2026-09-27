@@ -69,7 +69,7 @@ const PAGES={
       };
     },
     prompt:'第一行 GEMINI\n\n  缩进保留 <x> & y',
-    expect:{text:['回答：第一行 GEMINI','```python\nprint("CODE_OK")\n```','END_GEMINI'],absent:['Gemini said','Python\n','正在回答']}
+    expect:{text:['回答：第一行 GEMINI','```python\nprint("CODE_OK")\n```','END_GEMINI'],absent:['Gemini said','Python\n','正在回答'],mode:'Flash-Lite'}
   },
   chatgpt:{
     html:`<main><ol aria-label="Conversation" data-conversation-transcript id="transcript"></ol>
@@ -107,6 +107,41 @@ const PAGES={
     prompt:'第一行 豆包\n\n  缩进保留 <x> & y',
     expect:{text:['回答：第一行 豆包','END_DOUBAO'],absent:['正在回答']}
   },
+  // DeepSeek 2026-09-26 with DeepThink on: reasoning is a .ds-markdown inside .ds-think-content; the reply is
+  // .ds-markdown.ds-assistant-message-main-content. Toggles report their state through aria-pressed.
+  deepseek:{
+    html:`<main><div id="list"></div><textarea id="chat-input" placeholder="给 DeepSeek 发送消息"></textarea>
+      <div class="ds-toggle-button" aria-pressed="true">DeepThink</div><div class="ds-toggle-button" aria-pressed="false">Search</div>
+      <button data-testid="send-button">发送</button><div role="button" aria-label="停止" hidden>■</div></main>`,
+    setup:()=>{
+      const input=document.querySelector('#chat-input'),send=document.querySelector('[data-testid="send-button"]'),stop=document.querySelector('[aria-label="停止"]'),list=document.querySelector('#list');let n=0;
+      send.onclick=()=>{const sent=input.value;window.sent.push(sent);input.value='';n+=2;stop.hidden=false;
+        list.insertAdjacentHTML('beforeend',`<div data-virtual-list-item-key="${n}"><div class="fbb737a4"></div></div><div data-virtual-list-item-key="${n+1}"><div class="ds-message"><div class="ds-think-content"><div class="ds-markdown"><p>THINK_SECRET 正在思考</p></div></div></div></div>`);
+        list.querySelector(`[data-virtual-list-item-key="${n}"] .fbb737a4`).textContent=sent;
+        const turn=list.querySelector(`[data-virtual-list-item-key="${n+1}"] .ds-message`);
+        setTimeout(()=>{turn.querySelector('.ds-think-content .ds-markdown').innerHTML='<p>THINK_SECRET 思考完毕</p>';turn.insertAdjacentHTML('beforeend','<div class="ds-markdown ds-assistant-message-main-content"><p>回答：'+sent.split('\n')[0]+'</p><p>DS_FINAL</p></div>');},500);
+        setTimeout(()=>{stop.hidden=true;turn.insertAdjacentHTML('afterend','<div><div role="button" data-testid="copy-button">复制</div></div>');},1100);};
+    },
+    prompt:'第一行 DS\n\n  缩进保留 <x> & y',
+    expect:{text:['回答：第一行 DS','DS_FINAL'],absent:['THINK_SECRET'],mode:'深度思考'}
+  },
+  // 豆包 new chat: only the placeholder textarea is mounted at first; typing into it goes nowhere until the
+  // tiptap editor loads (AI圆桌 Android 2026-09-23). The adapter must wait for the real editor.
+  'doubao#transitional':{
+    html:`<main><div id="list"></div><div class="composer"><textarea data-testid="chat_input_input" class="textarea-YelHeN"></textarea></div><button id="flow-end-msg-send" class="send-msg-btn" disabled></button></main>`,
+    setup:()=>{
+      const box=document.querySelector('.composer'),send=document.querySelector('#flow-end-msg-send'),list=document.querySelector('#list');let editor=null,n=0;
+      setTimeout(()=>{editor=document.createElement('div');editor.className='tiptap ProseMirror';editor.contentEditable='true';box.append(editor);},1500);
+      // Before the editor exists the placeholder swallows input; afterwards it hands the text over.
+      document.querySelector('textarea').addEventListener('input',e=>{if(!editor)return;const text=e.target.value;setTimeout(()=>{editor.innerHTML=text.split('\n').map(line=>'<p>'+(line?line.replaceAll('&','&amp;').replaceAll('<','&lt;'):'<br>')+'</p>').join('');e.target.remove();send.disabled=false;},60);});
+      send.onclick=()=>{const text=[...editor.children].map(p=>p.textContent).join('\n');window.sent.push(text);editor.innerHTML='<p><br></p>';send.disabled=true;n++;
+        list.insertAdjacentHTML('beforeend',`<div data-testid="send_message"><div data-testid="message_content" data-message-id="u${n}"><div class="md-box-root"></div></div></div><div data-testid="receive_message"><div data-testid="message_content" data-message-id="a${n}"><div class="md-box-root" data-streaming="true"><p>正在回答</p></div></div><div data-foundation-type="receive-message-action-bar"></div></div>`);
+        list.querySelector(`[data-message-id="u${n}"] .md-box-root`).textContent=text;
+        setTimeout(()=>{const body=list.querySelector(`[data-message-id="a${n}"] .md-box-root`);body.innerHTML='<p>回答：'+text.split('\n')[0].replaceAll('<','&lt;')+'</p>';body.dataset.streaming='false';list.querySelector(`[data-message-id="a${n}"]`).parentElement.querySelector('[data-foundation-type="receive-message-action-bar"]').innerHTML='<button>复制</button>';},600);};
+    },
+    prompt:'第一行 过渡\n\n  缩进保留 <x> & y',
+    expect:{text:['回答：第一行 过渡'],absent:['正在回答']}
+  },
   qwen:{
     html:`<div class="chat-room-outer-wrap"><div id="list"></div>
       <div role="textbox" aria-multiline="true" data-slate-editor="true" data-slate-node="value" contenteditable="true" id="editor"></div>
@@ -135,8 +170,9 @@ const PAGES={
   }
 };
 
-for(const [provider,spec] of Object.entries(PAGES)){
- test(`${provider} adapter sends once, reads the full answer and sees the completion marker`,async()=>{
+for(const [key,spec] of Object.entries(PAGES)){
+ const provider=key.split('#')[0];
+ test(`${key} adapter sends once, reads the full answer and sees the completion marker`,async()=>{
   const browser=await chromium.launch({channel:'chromium',headless:true});
   try{
    const page=await browser.newPage();
@@ -145,6 +181,7 @@ for(const [provider,spec] of Object.entries(PAGES)){
    await page.evaluate(spec.setup);
    for(const name of ['adapters.js','content.js'])await page.addScriptTag({content:source(name)});
    const prep=await page.evaluate(p=>request({type:'YZ_PREPARE',provider:p}),provider);assert.equal(prep.ok,true,prep.error);
+   if('mode' in spec.expect)assert.equal(prep.mode,spec.expect.mode,provider+' reads the model / mode shown by the site');
    const sent=await page.evaluate(({p,prompt,baseline})=>request({type:'YZ_SEND',provider:p,requestId:'live-'+p,prompt,baseline}),{p:provider,prompt:spec.prompt,baseline:prep.baseline});
    assert.equal(sent.ok,true,sent.error);
    assert.deepEqual(await page.evaluate(()=>window.sent),[spec.prompt],provider+' must deliver the exact prompt once');

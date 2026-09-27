@@ -89,7 +89,8 @@ export async function launchNativeBrowser({profile,extension,headless=false,wind
       if(current.webSocketDebuggerUrl!==version.webSocketDebuggerUrl)throw new Error('Refusing to close a different browser instance.');
       const session=await browser.newBrowserCDPSession();
       try{await session.send('Browser.close');}catch(error){if(!/closed|disconnected/i.test(error.message))throw error;}
-      for(let attempt=0;attempt<80&&!exitInfo;attempt++)await delay(100);
+      // A loaded machine can take well over 8 s to finish shutting Chromium down.
+      for(let attempt=0;attempt<250&&!exitInfo;attempt++)await delay(100);
       if(!exitInfo)throw new Error(`Owned browser PID ${child.pid} did not exit after Browser.close.`);
     };
     return {browser,context,close,process:child,metadata:{startedAt:new Date().toISOString(),helperPid:process.pid,browserPid:child.pid,profile,extension,executable,args,cdpPort,webSocketDebuggerUrl:version.webSocketDebuggerUrl,browser:version.Browser,attachment:{noDefaults:true},stderrPath}};

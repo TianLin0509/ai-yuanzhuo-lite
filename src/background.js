@@ -1,4 +1,4 @@
-import {PROVIDERS,DEFAULT_MEMBERS,ACTIVE,id,newSession,validMembers,makeRound,composePrompts,busy,providerFor,cleanUrl,sameConversation,acceptEvent} from './core.js';
+import {PROVIDERS,DEFAULT_MEMBERS,ACTIVE,id,newSession,validMembers,makeRound,composePrompts,busy,providerFor,cleanUrl,sameConversation,acceptEvent,looksLikePlaceholder} from './core.js';
 import {createBackgroundSupport} from './background-support.js';
 import {createWorkspaces} from './workspaces.js';
 
@@ -77,7 +77,7 @@ async function dispatch(ref){
     const preparation=await pageMessage(tab.id,{type:'YZ_PREPARE',provider:job.provider,prompt:job.prompt});
     await workspaces.validateTab(ref.sessionId,await chrome.tabs.get(tab.id));
     if(!sameConversation(job.provider,preparation.url,(await loadSession(ref.sessionId)).bindings[job.provider].url))throw new Error('准备发送时网页已切换对话，已取消发送。请点“原网页”核对。');
-    await updateJob(ref,j=>{if(ACTIVE.has(j.status)){j.baseline=preparation.baseline;j.url=preparation.url;j.status='sending';j.phase='prepared';}});
+    await updateJob(ref,j=>{if(ACTIVE.has(j.status)){j.baseline=preparation.baseline;j.url=preparation.url;j.mode=preparation.mode||'';j.status='sending';j.phase='prepared';}});
     job=await supportedJob(ref);if(!job){await support.release(tab.id,ref.requestId);return;}
     // Persist the uncertain boundary BEFORE the page can click. A restart never blindly repeats SEND.
     await updateJob(ref,j=>{if(ACTIVE.has(j.status))j.phase='attempted';});
@@ -94,7 +94,8 @@ async function locateEvent(event,sender){
     if(!acceptEvent(job,event,sender.tab.id)||providerFor(sender.url)!==job.provider||providerFor(event.url)!==job.provider)return false;
     if(!['sent','unconfirmed','streaming','done','attention'].includes(event.status))return false;
     const ref={sessionId:session.id,roundId:round.id,jobId:job.id,requestId:job.requestId};
-    await updateJob(ref,(j,s)=>{if(!acceptEvent(j,event,sender.tab.id))return;j.sequence=event.sequence;j.status=event.status;j.text=typeof event.text==='string'?event.text:j.text;j.format=event.format||'plain';j.error=event.error||'';j.url=event.url;j.phase=event.phase;if(event.anchor)j.anchor=event.anchor;j.updatedAt=Date.now();s.bindings[j.provider]={tabId:j.tabId,url:j.url};});
+    await updateJob(ref,(j,s)=>{if(!acceptEvent(j,event,sender.tab.id))return;j.sequence=event.sequence;j.status=event.status;j.text=typeof event.text==='string'?event.text:j.text;j.format=event.format||'plain';j.error=event.error||'';j.url=event.url;j.phase=event.phase;if(event.anchor)j.anchor=event.anchor;j.updatedAt=Date.now();s.bindings[j.provider]={tabId:j.tabId,url:j.url};
+      if(j.status==='done'&&s.rounds.find(x=>x.id===round.id)?.kind==='summary'&&looksLikePlaceholder(j.text)){j.status='attention';j.error='队长总结只有开场白或很短，完整内容可能写进了网页的文档或卡片。请打开原网页核对，写完后点“确认已完成”，或在新一轮要求直接在对话正文写出。';}});
     await alarm();return true;
   }}return false;
 }
@@ -111,7 +112,7 @@ async function stopJob(ref,{skip=false}={}){
   if(job.tabId){try{const result=await pageMessage(job.tabId,{type:'YZ_STOP',requestId:job.requestId,stopGeneration:true});if(!result.pageStopped&&!skip)await updateJob(ref,j=>{j.error='已停止圆桌读取。原网页若仍在生成，可在原网页手动停止。';});}catch(error){await updateJob(ref,j=>{j.error='已停止圆桌读取；原网页未确认停止：'+error.message;});}}
   await releaseSupport(ref);
 }
-async function state(sessionId=index.currentId){await queue;const key='arena.draft.'+sessionId,data=await chrome.storage.local.get(['arena.preferences',key]);if(!data[key]){const legacy=await chrome.storage.session.get('draft.'+sessionId);if(typeof legacy['draft.'+sessionId]==='string')data[key]=await run(async()=>{const current=await chrome.storage.local.get(key);if(current[key])return current[key];const draft={text:legacy['draft.'+sessionId],kind:'ask',revision:Date.now()*1000,writer:'migration'};await chrome.storage.local.set({[key]:draft});return draft;});}return {index:structuredClone(index),session:structuredClone(await loadSession(sessionId)),providers:PROVIDERS,supportWarning,build:await buildInfo(),preferences:data['arena.preferences']||{layout:'a'},draft:data[key]||{text:'',kind:'ask',captain:'deepseek',depth:'简要结论'}};}
+async function state(sessionId=index.currentId){await queue;const key='arena.draft.'+sessionId,data=await chrome.storage.local.get(['arena.preferences',key]);if(!data[key]){const legacy=await chrome.storage.session.get('draft.'+sessionId);if(typeof legacy['draft.'+sessionId]==='string')data[key]=await run(async()=>{const current=await chrome.storage.local.get(key);if(current[key])return current[key];const draft={text:legacy['draft.'+sessionId],kind:'ask',revision:Date.now()*1000,writer:'migration'};await chrome.storage.local.set({[key]:draft});return draft;});}return {index:structuredClone(index),session:structuredClone(await loadSession(sessionId)),providers:PROVIDERS,supportWarning,build:await buildInfo(),preferences:data['arena.preferences']||{layout:'a'},draft:data[key]||{text:'',kind:'ask',captain:'deepseek',depth:'简要结论',style:'debate'}};}
 async function command(message){
   let callerSessionId=message.sessionId||index.currentId;
   if(Number.isInteger(message.windowId)){
@@ -129,7 +130,7 @@ async function command(message){
       setTimeout(()=>chrome.runtime.reload(),150);return {...await state(),reloading:true};
     }
     case 'preferences':{if(!['a','b','c'].includes(message.layout))throw new Error('未知阅读视图。');await chrome.storage.local.set({'arena.preferences':{layout:message.layout}});return state();}
-    case 'draft':{const draft=await run(async()=>{const key='arena.draft.'+message.sessionId,data=await chrome.storage.local.get(key),draft=data[key]||{};if(message.revision&&message.revision<=(draft.lastInputRevision||0))return draft;if(message.baseRevision!==undefined&&message.baseRevision!==(draft.revision||0)&&message.writer!==draft.writer)throw new Error('草稿已在另一处改变。未保存的输入仍在本地备份中，请核对两份文字后再使用。');for(const k of ['text','kind','captain','depth'])if(typeof message.patch?.[k]==='string')draft[k]=message.patch[k];draft.revision=Math.max(Date.now()*1000,(draft.revision||0)+1,message.revision||0);draft.lastInputRevision=message.revision||draft.revision;draft.writer=message.writer||'command';await chrome.storage.local.set({[key]:draft});return draft;});return {sessionId:message.sessionId,draft};}
+    case 'draft':{const draft=await run(async()=>{const key='arena.draft.'+message.sessionId,data=await chrome.storage.local.get(key),draft=data[key]||{};if(message.revision&&message.revision<=(draft.lastInputRevision||0))return draft;if(message.baseRevision!==undefined&&message.baseRevision!==(draft.revision||0)&&message.writer!==draft.writer)throw new Error('草稿已在另一处改变。未保存的输入仍在本地备份中，请核对两份文字后再使用。');for(const k of ['text','kind','captain','depth','style'])if(typeof message.patch?.[k]==='string')draft[k]=message.patch[k];draft.revision=Math.max(Date.now()*1000,(draft.revision||0)+1,message.revision||0);draft.lastInputRevision=message.revision||draft.revision;draft.writer=message.writer||'command';await chrome.storage.local.set({[key]:draft});return draft;});return {sessionId:message.sessionId,draft};}
     case 'quote':{await run(async()=>{const s=await loadSession(message.sessionId),r=s.rounds.find(r=>r.id===message.roundId),j=r?.jobs.find(j=>j.id===message.jobId);if(!j?.text)throw new Error('这份回答暂无可引用的正文。');const key='arena.draft.'+s.id,data=await chrome.storage.local.get(key),draft=data[key]||{},stamp=new Date(r.createdAt).toLocaleString('zh-CN',{hour12:false});await chrome.storage.local.set({[key]:{...draft,text:(draft.text||'')+`\n\n【引用 ${stamp} · ${PROVIDERS[j.provider].name}】\n${j.text}\n【引用结束】`,revision:Math.max(Date.now()*1000,(draft.revision||0)+1),writer:'quote'}});});return state();}
     case 'preview':{const s=await loadSession(message.sessionId);return {...await state(),prompts:composePrompts(message.kind,message.text,s,message.options),baseRoundId:s.rounds.at(-1)?.id||null};}
     case 'main':{const opened=await workspaces.main(message.sessionId);return {...await state(),opened};}
