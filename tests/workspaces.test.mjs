@@ -83,3 +83,12 @@ test('A window can move to another roundtable in place, but never take one open 
   h.windows.set(2,{id:2});await assert.rejects(()=>h.api.assign(2,other.id),/另一个窗口/);assert.deepEqual(await h.api.snapshot(),{[other.id]:1});
   await assert.rejects(()=>h.api.assign(1,'missing'),/session absent/);
 });
+test('After an extension reload the bound tab is kept when it moved from a new-chat page into its chat; other chats are not adopted',async()=>{
+  const h=harness();
+  h.first.bindings={chatgpt:{tabId:21,url:'https://chatgpt.com/'},deepseek:{tabId:22,url:'https://chat.deepseek.com/a/chat/s/saved'}};
+  h.tabs.set(21,{id:21,windowId:1,url:'https://chatgpt.com/c/created-by-send'});
+  h.tabs.set(22,{id:22,windowId:1,url:'https://chat.deepseek.com/a/chat/s/someone-else'});
+  assert.equal(await h.api.claim(1),h.first.id);
+  assert.equal(h.first.bindings.chatgpt.tabId,21,'new chat that became a conversation stays bound');
+  assert.equal(h.first.bindings.deepseek.tabId,undefined,'a saved chat that now shows another chat is not adopted');
+});

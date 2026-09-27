@@ -1,4 +1,4 @@
-import {PROVIDERS,DEFAULT_MEMBERS,MAX_SESSIONS,ACTIVE,id,newSession,validMembers,makeRound,composePrompts,busy,providerFor,cleanUrl,sameConversation,acceptEvent,looksLikePlaceholder,validateTemplate} from './core.js';
+import {PROVIDERS,DEFAULT_MEMBERS,MAX_SESSIONS,ACTIVE,id,newSession,validMembers,makeRound,composePrompts,busy,providerFor,cleanUrl,sameConversation,acceptEvent,looksLikePlaceholder,validateTemplate,relayNext,relayPrompt} from './core.js';
 import {createBackgroundSupport} from './background-support.js';
 import {createWorkspaces} from './workspaces.js';
 
@@ -63,6 +63,7 @@ function provisionalRecovery(provider,binding,url,job){
   try{const before=new URL(binding.url),after=new URL(url);return before.origin===after.origin&&/^\/chat\/local[_-][^/]+\/?$/.test(before.pathname)&&/^\/chat\/\d+\/?$/.test(after.pathname);}catch{return false;}
 }
 const LOST_CHAT='没能回到当时的对话：网站打开了新对话（常见于未登录或对话已删除）。旧回答仍在记录里；下一轮在新对话继续，这一家看不到之前的上下文。';
+function startedChat(provider,saved,here){const pattern=PROVIDERS[provider].conversation;try{return !!pattern&&providerFor(here)===provider&&!pattern.test(new URL(saved).pathname)&&pattern.test(new URL(here).pathname);}catch{return false;}}
 function fellBack(provider,saved,here){const pattern=PROVIDERS[provider].conversation;try{return !!pattern&&providerFor(here)===provider&&pattern.test(new URL(saved).pathname)&&!pattern.test(new URL(here).pathname);}catch{return false;}}
 async function connection(sessionId,provider,{focus=false,verifyConversation=false,rereadJob=null}={}){
   const ownerWindow=await workspaces.requireWindow(sessionId);
@@ -75,6 +76,9 @@ async function connection(sessionId,provider,{focus=false,verifyConversation=fal
     // the member continues in the new chat only after the user presses retry, knowing the context is gone.
     const here=tab.url||tab.pendingUrl;
     if(!rereadJob&&fellBack(provider,binding.url,here)){await mutate(sessionId,s=>{if(s.bindings[provider]?.tabId===tab.id)s.bindings[provider]={tabId:tab.id,url:here,note:LOST_CHAT};});throw Object.assign(new Error(`${PROVIDERS[provider].name} 网页没有停在原来的对话，打开的是新对话，本次没有发送。点“重试发送”会在新对话里继续，这一家看不到之前的上下文。`),{notSent:true});}
+    // Sent from a new-chat page, the site then moved to the chat it created; reading failed before the address was
+    // recorded. Re-reading there is allowed: the page must still show this round's question (unless the user forces).
+    if(rereadJob?.phase==='attempted'&&startedChat(provider,binding.url,here))return tab;
     throw new Error('该标签页已切换到其他对话。请点“原网页”回到本轮绑定的对话，再重试。');
   }
   if(!tab){tab=await chrome.tabs.create({windowId:ownerWindow,url:binding?.url||PROVIDERS[provider].url,active:focus});await mutate(sessionId,s=>{s.bindings[provider]={tabId:tab.id,url:tab.url||tab.pendingUrl||PROVIDERS[provider].url};});}
@@ -94,7 +98,9 @@ async function dispatch(ref){
     job=await readJob(ref);if(!job||!ACTIVE.has(job.status)){await support.release(tab.id,ref.requestId);return;}
     await inject(tab.id,job.provider);
     job=await supportedJob(ref);if(!job){await support.release(tab.id,ref.requestId);return;}
-    const preparation=await pageMessage(tab.id,{type:'YZ_PREPARE',provider:job.provider,prompt:job.prompt});
+    // Our own earlier questions to this site (recent rounds): if one never went out, the page may still hold it.
+    const stale=(await loadSession(ref.sessionId)).rounds.slice(-6).flatMap(r=>r.jobs).filter(j=>j.provider===job.provider&&j.id!==job.id&&j.prompt).map(j=>j.prompt);
+    const preparation=await pageMessage(tab.id,{type:'YZ_PREPARE',provider:job.provider,prompt:job.prompt,stale});
     await workspaces.validateTab(ref.sessionId,await chrome.tabs.get(tab.id));
     if(!sameConversation(job.provider,preparation.url,(await loadSession(ref.sessionId)).bindings[job.provider].url))throw new Error('准备发送时网页已切换对话，已取消发送。请点“原网页”核对。');
     await updateJob(ref,j=>{if(ACTIVE.has(j.status)){j.baseline=preparation.baseline;j.url=preparation.url;j.mode=preparation.mode||'';j.status='sending';j.phase='prepared';}});
@@ -116,14 +122,29 @@ async function locateEvent(event,sender){
     const ref={sessionId:session.id,roundId:round.id,jobId:job.id,requestId:job.requestId};
     await updateJob(ref,(j,s)=>{if(!acceptEvent(j,event,sender.tab.id))return;j.sequence=event.sequence;j.status=event.status;j.text=typeof event.text==='string'?event.text:j.text;j.format=event.format||'plain';j.error=event.error||'';j.url=event.url;j.phase=event.phase;if(event.anchor)j.anchor=event.anchor;j.updatedAt=Date.now();s.bindings[j.provider]={tabId:j.tabId,url:j.url};
       if(j.status==='done'&&s.rounds.find(x=>x.id===round.id)?.kind==='summary'&&looksLikePlaceholder(j.text)){j.status='attention';j.error='队长总结只有开场白或很短，完整内容可能写进了网页的文档或卡片。请打开原网页核对，写完后点“确认已完成”，或在新一轮要求直接在对话正文写出。';}});
-    await alarm();return true;
+    await alarm();if(round.kind==='relay')advanceLater(session.id,round.id);return true;
   }}return false;
 }
+// Workflow rounds: when a member finishes (or is skipped), compose the next member's prompt from the answers so
+// far and send it. Claiming the job inside mutate() means two events can never send the same turn twice.
+async function advanceRelay(sessionId,roundId){
+  const templates=(await chrome.storage.local.get(TEMPLATES))[TEMPLATES]||{};
+  const jobId=await mutate(sessionId,s=>{
+    const r=s.rounds.find(x=>x.id===roundId);if(!r||s.rounds.at(-1)?.id!==roundId)return null;const i=relayNext(r);if(i<0)return null;const job=r.jobs[i];
+    try{job.prompt=relayPrompt(r,i,templates);job.status='queued';}catch(error){job.status='error';job.phase='not_sent';job.error=error.message;}
+    job.updatedAt=Date.now();return job.status==='queued'?job.id:null;
+  });
+  if(jobId){await alarm();await dispatch({sessionId,roundId,jobId});await alarm();}
+}
+const advanceLater=(sessionId,roundId)=>{advanceRelay(sessionId,roundId).catch(error=>console.error('[AI圆桌lite] 工作流推进失败',error));};
+async function stopWaiting(sessionId,roundId){await mutate(sessionId,s=>{for(const j of s.rounds.find(r=>r.id===roundId)?.jobs||[])if(j.status==='waiting'){j.status='stopped';j.updatedAt=Date.now();}});}
 async function recover(){
   for(const meta of index.sessions){const session=await loadSession(meta.id);for(const round of session.rounds){for(const job of round.jobs){if(!ACTIVE.has(job.status)||Date.now()-job.updatedAt<45000)continue;
     let active=false;try{if(job.tabId&&support.has(job.tabId,job.requestId)){const result=await pageMessage(job.tabId,{type:'YZ_STATUS',requestId:job.requestId});active=result.active;}}catch(error){console.info('[AI圆桌lite] 恢复检查：',error.message);}
     if(!active)await updateJob({sessionId:session.id,roundId:round.id,jobId:job.id,requestId:job.requestId},j=>{if(ACTIVE.has(j.status)){j.status='attention';j.error='网页或扩展连接已重启。请打开原网页并重新提取；不会自动重发。';}});
-  }}}await alarm();
+  }}
+    const last=session.rounds.at(-1);if(relayNext(last)>=0&&await workspaces.owner(session.id))advanceLater(session.id,last.id);
+  }await alarm();
 }
 async function stopJob(ref,{skip=false}={}){
   const job=await readJob(ref);if(!job)return;
@@ -198,7 +219,7 @@ async function command(message){
       setTimeout(()=>chrome.runtime.reload(),150);return {...await state(),reloading:true};
     }
     case 'preferences':{if(!['a','b','c'].includes(message.layout))throw new Error('未知阅读视图。');await chrome.storage.local.set({'arena.preferences':{layout:message.layout}});return state();}
-    case 'draft':{const draft=await run(async()=>{const key='arena.draft.'+message.sessionId,data=await chrome.storage.local.get(key),draft=data[key]||{};if(message.revision&&message.revision<=(draft.lastInputRevision||0))return draft;if(message.baseRevision!==undefined&&message.baseRevision!==(draft.revision||0)&&message.writer!==draft.writer)throw new Error('草稿已在另一处改变。未保存的输入仍在本地备份中，请核对两份文字后再使用。');for(const k of ['text','kind','captain','depth','style'])if(typeof message.patch?.[k]==='string')draft[k]=message.patch[k];draft.revision=Math.max(Date.now()*1000,(draft.revision||0)+1,message.revision||0);draft.lastInputRevision=message.revision||draft.revision;draft.writer=message.writer||'command';await chrome.storage.local.set({[key]:draft});return draft;});return {sessionId:message.sessionId,draft};}
+    case 'draft':{const draft=await run(async()=>{const key='arena.draft.'+message.sessionId,data=await chrome.storage.local.get(key),draft=data[key]||{};if(message.revision&&message.revision<=(draft.lastInputRevision||0))return draft;if(message.baseRevision!==undefined&&message.baseRevision!==(draft.revision||0)&&message.writer!==draft.writer)throw new Error('草稿已在另一处改变。未保存的输入仍在本地备份中，请核对两份文字后再使用。');for(const k of ['text','kind','captain','depth','style','order'])if(typeof message.patch?.[k]==='string')draft[k]=message.patch[k];draft.revision=Math.max(Date.now()*1000,(draft.revision||0)+1,message.revision||0);draft.lastInputRevision=message.revision||draft.revision;draft.writer=message.writer||'command';await chrome.storage.local.set({[key]:draft});return draft;});return {sessionId:message.sessionId,draft};}
     case 'quote':{await run(async()=>{const s=await loadSession(message.sessionId),r=s.rounds.find(r=>r.id===message.roundId),j=r?.jobs.find(j=>j.id===message.jobId);if(!j?.text)throw new Error('这份回答暂无可引用的正文。');const key='arena.draft.'+s.id,data=await chrome.storage.local.get(key),draft=data[key]||{},stamp=new Date(r.createdAt).toLocaleString('zh-CN',{hour12:false});await chrome.storage.local.set({[key]:{...draft,text:(draft.text||'')+`\n\n【引用 ${stamp} · ${PROVIDERS[j.provider].name}】\n${j.text}\n【引用结束】`,revision:Math.max(Date.now()*1000,(draft.revision||0)+1),writer:'quote'}});});return state();}
     case 'preview':{const s=await loadSession(message.sessionId);return {...await state(),prompts:composePrompts(message.kind,message.text,s,{...message.options,templates:await templates()}),baseRoundId:s.rounds.at(-1)?.id||null};}
     case 'main':{const opened=await workspaces.main(message.sessionId);return {...await state(),opened};}
@@ -224,10 +245,11 @@ async function command(message){
       await run(async()=>{const key='arena.draft.'+message.sessionId,data=await chrome.storage.local.get(key);if(data[key]?.text===message.text)await chrome.storage.local.set({[key]:{...data[key],text:'',revision:Math.max(Date.now()*1000,(data[key].revision||0)+1),writer:'sent'}});});
       await alarm();await Promise.all(round.jobs.map(j=>dispatch({sessionId:message.sessionId,roundId:round.id,jobId:j.id})));await alarm();return state();
     }
-    case 'stop':{const s=await loadSession(message.sessionId),r=s.rounds.find(r=>r.id===message.roundId);if(!r)throw new Error('轮次不存在。');await Promise.all(r.jobs.filter(j=>ACTIVE.has(j.status)).map(j=>stopJob({sessionId:s.id,roundId:r.id,jobId:j.id})));await alarm();return state();}
+    case 'stop':{const s=await loadSession(message.sessionId),r=s.rounds.find(r=>r.id===message.roundId);if(!r)throw new Error('轮次不存在。');await stopWaiting(s.id,r.id);await Promise.all(r.jobs.filter(j=>ACTIVE.has(j.status)).map(j=>stopJob({sessionId:s.id,roundId:r.id,jobId:j.id})));await alarm();return state();}
     case 'job':{
       const ref={sessionId:message.sessionId,roundId:message.roundId,jobId:message.jobId},job=await readJob(ref);if(!job)throw new Error('回答不存在。');let forceable=null;
       ref.requestId=job.requestId;
+      if(['retry','reread','confirm'].includes(message.operation)&&job.status==='waiting')throw new Error('还没轮到这位成员；可以先跳过它。');
       if(['retry','reread'].includes(message.operation)){
         const s=await loadSession(ref.sessionId);
         if(s.rounds.at(-1)?.id!==ref.roundId)throw new Error('历史轮次不能重新发送或提取，请在最新一轮继续提问。');
@@ -246,7 +268,9 @@ async function command(message){
         const tab=await connection(ref.sessionId,job.provider,{verifyConversation:!force,rereadJob:job});await waitForTab(tab.id);
         const requestId=id();const claimed=await updateJob(ref,(j,s)=>{if(s.rounds.at(-1)?.id!==ref.roundId||ACTIVE.has(j.status))throw new Error('该回答状态已变化，请刷新后重试。');j.requestId=requestId;j.sequence=0;j.status='sent';j.tabId=tab.id;j.error='';j.updatedAt=Date.now();return true;});if(!claimed)throw new Error('该回答状态已变化，请刷新后重试。');
         try{await support.acquire(tab.id,requestId,job.provider);if(!await supportedJob({...ref,requestId})){await support.release(tab.id,requestId);return state();}await inject(tab.id,job.provider);if(!await supportedJob({...ref,requestId})){await support.release(tab.id,requestId);return state();}await pageMessage(tab.id,{type:'YZ_REREAD',provider:job.provider,requestId,baseline:job.phase==='attempted'?job.baseline:null,url:job.url,prompt:job.prompt,anchor:force?null:job.anchor,force});}catch(error){await updateJob({...ref,requestId},j=>{if(ACTIVE.has(j.status)){j.status='attention';j.error=error.message;}});await releaseSupport({...ref,requestId});if(error.code==='NOT_OWNED'&&!force)forceable={jobId:job.id,provider:job.provider,question:error.question||''};}
-      }else throw new Error('未知回答操作。');await alarm();return {...await state(),forceable};
+      }else throw new Error('未知回答操作。');await alarm();
+      if(['skip','confirm'].includes(message.operation)&&(await loadSession(ref.sessionId)).rounds.find(r=>r.id===ref.roundId)?.kind==='relay')advanceLater(ref.sessionId,ref.roundId);
+      return {...await state(),forceable};
     }
     case 'delete':{const s=await loadSession(message.sessionId);if(busy(s))throw new Error('进行中的圆桌不能删除，请先停止。');if(await workspaces.owner(s.id))throw new Error('请先关闭这场圆桌的窗口，再从其他窗口删除历史。');if(!message.confirm)throw new Error('删除历史需要确认。');if(index.sessions.length===1)throw new Error('请先新建一场圆桌，再删除最后一条历史。');await removeSession(s.id);return state();}
     default:throw new Error('未知圆桌操作。');
@@ -272,7 +296,7 @@ chrome.runtime.onConnect?.addListener(port=>{
 });
 chrome.sidePanel.onOpened?.addListener(({windowId})=>{ready.then(()=>{closedPanels.delete(windowId);nativePanelState.set(windowId,true);return publishPanel(windowId);}).catch(e=>console.error('[AI圆桌lite] 侧栏打开状态保存失败',e));});
 chrome.sidePanel.onClosed?.addListener(({windowId})=>{ready.then(()=>{closedPanels.add(windowId);nativePanelState.set(windowId,false);return publishPanel(windowId);}).catch(e=>console.error('[AI圆桌lite] 侧栏关闭状态保存失败',e));});
-chrome.windows.onRemoved?.addListener(windowId=>{ready.then(async()=>{const sessionId=await workspaces.ownerForWindow(windowId);await workspaces.forget(windowId);if(sessionId){const s=await loadSession(sessionId);for(const r of s.rounds)for(const j of r.jobs)if(ACTIVE.has(j.status))await stopJob({sessionId,roundId:r.id,jobId:j.id});await alarm();await discardIfEmpty(sessionId);}await chrome.storage.session.remove('arena.panel.'+windowId);}).catch(e=>console.error('[AI圆桌lite] 关闭窗口清理失败',e));});
+chrome.windows.onRemoved?.addListener(windowId=>{ready.then(async()=>{const sessionId=await workspaces.ownerForWindow(windowId);await workspaces.forget(windowId);if(sessionId){const s=await loadSession(sessionId);for(const r of s.rounds)if(r.jobs.some(j=>j.status==='waiting'))await stopWaiting(sessionId,r.id);for(const r of s.rounds)for(const j of r.jobs)if(ACTIVE.has(j.status))await stopJob({sessionId,roundId:r.id,jobId:j.id});await alarm();await discardIfEmpty(sessionId);}await chrome.storage.session.remove('arena.panel.'+windowId);}).catch(e=>console.error('[AI圆桌lite] 关闭窗口清理失败',e));});
 chrome.alarms.onAlarm.addListener(event=>{if(event.name===ALARM)ready.then(recover).catch(error=>console.error('[AI圆桌lite] 恢复失败',error));});
 chrome.runtime.onInstalled.addListener(details=>{ready.then(()=>details.reason==='update'?workspaces.restoreAfterReload():null).catch(error=>console.error('[AI圆桌lite] 初始化失败',error));});
 chrome.runtime.onStartup.addListener(()=>{ready.then(recover).catch(error=>console.error('[AI圆桌lite] 启动恢复失败',error));});

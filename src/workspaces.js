@@ -57,7 +57,9 @@ export function createWorkspaces(chrome, {loadSession, createSession, mutate, ge
         for(const [p,b] of Object.entries(s.bindings)){
           // Prefer the bound tab itself (still valid after an extension update); several tabs can share a landing URL.
           const matches=t=>providerFor(t.url||t.pendingUrl)===p&&cleanUrl(t.url||t.pendingUrl)===cleanUrl(b.url);
-          const tab=tabs.find(t=>t.id===b.tabId&&matches(t))||tabs.find(matches);
+          // The bound tab may also have moved from a new-chat page into the chat our send created.
+          const started=t=>{const pattern=providers[p]?.conversation;try{return !!pattern&&providerFor(t.url||t.pendingUrl)===p&&!pattern.test(new URL(b.url).pathname)&&pattern.test(new URL(t.url||t.pendingUrl).pathname);}catch{return false;}};
+          const tab=tabs.find(t=>t.id===b.tabId&&(matches(t)||started(t)))||tabs.find(matches);
           s.bindings[p]=tab?{tabId:tab.id,url:b.url}:{url:b.url};
         }
       });

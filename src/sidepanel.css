@@ -130,7 +130,7 @@ body:has(#error-banner:not([hidden])) .desktop{height:calc(100dvh - 84px)}
 .member-row .edit-op{display:none}
 .member-row:hover .edit-op,.member-row:focus-within .edit-op,.member-row:is([data-status=skipped],[data-status=error],[data-status=attention]) .edit-op[data-op=replace]{display:inline}
 .mode{color:var(--muted);font-size:11.5px;border:1px solid var(--line);border-radius:4px;padding:0 5px;line-height:18px;white-space:nowrap}
-#style-options>span:first-child{color:var(--muted);font-size:12.5px;align-self:center}
+#relay-options>span:first-child,#style-options>span:first-child{color:var(--muted);font-size:12.5px;align-self:center}
 .section-head small{color:var(--muted);font-weight:400;margin-left:4px}
 .add-member{height:28px;margin-top:2px;border:1px dashed var(--line);background:none;color:var(--muted);width:100%}
 .add-member:hover{color:var(--acc);border-color:var(--acc);background:none}
@@ -254,3 +254,11 @@ dialog::backdrop{background:rgba(20,24,30,.28)}
   .app-head button{padding:0 7px}
 }
 @media (prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important}}
+
+/* Workflow order: numbered members joined by arrows; ↑ moves one place earlier. */
+.relay-order{display:flex;flex-wrap:wrap;align-items:center;gap:4px 6px}
+.relay-order .step{display:inline-flex;align-items:center;gap:5px;height:26px;padding:0 4px 0 6px;border:1px solid var(--line);border-radius:6px;font-size:12.5px}
+.relay-order .step b{font-size:11px;color:var(--acc)}
+.relay-order .step button{height:20px;width:20px;padding:0;border:0;background:none;color:var(--muted)}
+.relay-order .step button:hover:not(:disabled){color:var(--acc);background:var(--bg)}
+.relay-order .arrow{color:var(--muted);font-size:12px}

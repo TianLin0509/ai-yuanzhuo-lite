@@ -72,3 +72,21 @@ test('预设提示词：统一占位展示、可自定义、必须保留材料�
  // Answers and questions containing slot names are inserted verbatim, never expanded again.
  const summary=composePrompts('summary','',s,{captain:'kimi'})[0].prompt;assert(summary.includes('原问题 {各家回答}'));assert(summary.includes('deepseek_A {队友回答}'));assert.equal(summary.split('--- DeepSeek ---').length,2);
 });
+test('工作流：按顺序依次回答，后者收到问题与前面全部完整回答；跳过或失败的成员不提供材料',async()=>{
+ const {relayOrder,relayPrompt,relayNext,busy:isBusy}=await import('../src/core.js');
+ const s=seed();assert.deepEqual(relayOrder(s,'doubao,deepseek,kimi'),['doubao','deepseek','kimi']);assert.deepEqual(relayOrder(s,'doubao,deepseek'),s.members,'an order that does not name every member falls back');assert.deepEqual(relayOrder(s,'kimi,kimi,doubao'),s.members);
+ assert.throws(()=>makeRound('relay','  ',s),/先输入/);
+ const r=makeRound('relay','工作流问题',s,{order:'kimi,deepseek,doubao'});s.rounds.push(r);
+ assert.deepEqual(r.jobs.map(j=>[j.provider,j.status,j.prompt]),[['kimi','queued','工作流问题'],['deepseek','waiting',''],['doubao','waiting','']]);
+ assert(isBusy(s));assert.equal(relayNext(r),-1,'nobody else goes while the first answers');
+ r.jobs[0].status='done';r.jobs[0].text='KIMI_ANSWER';assert.equal(relayNext(r),1);
+ const second=relayPrompt(r,1);assert(second.startsWith('工作流问题\n\n'));assert(second.includes('【Kimi 的回答】:\nKIMI_ANSWER'));
+ r.jobs[1].status='error';assert.equal(relayNext(r),-1,'a failed member pauses the workflow');
+ r.jobs[1].status='skipped';r.jobs[1].text='PARTIAL_MUST_NOT_PASS';assert.equal(relayNext(r),2);
+ const third=relayPrompt(r,2);assert(third.includes('KIMI_ANSWER'));assert(!third.includes('PARTIAL_MUST_NOT_PASS'));
+ assert.equal(relayPrompt({...r,jobs:[{...r.jobs[0],status:'skipped'},r.jobs[1],r.jobs[2]]},2),'工作流问题','with no earlier answer the member simply gets the question');
+ assert(relayPrompt(r,2,{relay:'自定义：{问题}｜{前面回答}'}).startsWith('自定义：工作流问题｜【Kimi'));
+ assert.throws(()=>relayPrompt({...r,jobs:[{...r.jobs[0],text:'长'.repeat(MAX_PROMPT)},r.jobs[1],r.jobs[2]]},2),/不会自动截断/);
+ r.jobs[2].status='done';r.jobs[2].text='DOUBAO';assert(!isBusy(s));
+ const discuss=composePrompts('discuss','',s);assert.equal(discuss.find(p=>p.provider==='doubao').prompt.includes('KIMI_ANSWER'),true,'a workflow round can be discussed');
+});

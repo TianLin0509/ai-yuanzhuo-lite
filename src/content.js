@@ -135,6 +135,11 @@
   function limitNotice(config){if(!config.limit)return '';for(const selector of config.limit.selectors)for(const el of document.querySelectorAll(selector)){const text=normalized(el.textContent).replace(/\s+/g,' ');if(visible(el)&&config.limit.text.test(text))return text.slice(0,80);}return '';}
   function assertNoLimit(config){const notice=limitNotice(config);if(notice)throw new Error('网页提示额度已用完（'+notice+'），未发送本轮提问。请等待额度恢复或在原网页处理。');}
   function assertNoAttachments(config){if(config.draftAttachment&&find(config.draftAttachment))throw new Error('该网页有尚未发送的附件，请先处理原网页附件草稿；未发送本轮提问。');}
+  function clearInput(input){
+    input.focus();
+    if(input.tagName==='TEXTAREA'){Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(input,'');input.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'deleteContentBackward'}));return;}
+    const selection=getSelection(),range=document.createRange();range.selectNodeContents(input);selection.removeAllRanges();selection.addRange(range);document.execCommand('delete',false);
+  }
   async function fill(input,text,config,isCancelled){
     input.focus();
     if(input.tagName==='TEXTAREA'){Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(input,text);input.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:text}));input.dispatchEvent(new Event('change',{bubbles:true}));}
@@ -178,7 +183,10 @@
     if(loginRequired(config))throw new Error('该网页尚未登录。请在原网页登录后再发送；未发送本轮提问。');
     assertNoAttachments(config);assertNoLimit(config);
     const input=find(config.input);if(!input)throw new Error('未找到可用输入框。请先打开网页完成登录或验证。');
-    const leftover=normalized(value(input)),reuse=!!leftover&&!!message.prompt&&sameText(leftover,message.prompt);
+    let leftover=normalized(value(input));const reuse=!!leftover&&!!message.prompt&&sameText(leftover,message.prompt);
+    // An earlier round's own question that never went out (failed or skipped member) may still sit in the box.
+    // It is ours, not the user's draft, so clear it rather than block every later round on this site.
+    if(leftover&&!reuse&&(message.stale||[]).some(old=>sameText(leftover,old))){clearInput(input);leftover=normalized(value(input));if(leftover)throw Object.assign(new Error('网页输入框里残留上一轮未发出的提问，未能清空。请在原网页删掉后重试。'),{notSent:true});}
     if(leftover&&!reuse)throw new Error('该网页有尚未发送的内容。请先处理原网页草稿，再重试。');
     if(find(config.stop)||(config.busy&&find(config.busy)))throw new Error('该网页仍在生成其他回答，请等待结束。');
     // The mode caption is informational; a site change there must never block sending.
@@ -199,7 +207,8 @@
     try{
       if(!reuse)await fill(input,message.prompt,config,()=>job.cancelled);if(job.cancelled)return {status:'stopped'};assertNoAttachments(config);
       let button=find(config.send);
-      for(let i=0;i<8&&!available(button);i++){await sleep(160);if(job.cancelled)return {status:'stopped'};button=find(config.send);}
+      // Background tabs render slowly (Claude, ChatGPT): the button can appear seconds after the text.
+      for(let i=0;i<40&&!available(button);i++){await sleep(200);if(job.cancelled)return {status:'stopped'};button=find(config.send);}
       if(!available(button)){retire(job);throw new Error('未找到可用发送按钮，文字保留在网页中，未自动按回车或重试。');}
       // Nothing may yield between final ownership/integrity checks and the click.
       assertNoAttachments(config);assertNoLimit(config);

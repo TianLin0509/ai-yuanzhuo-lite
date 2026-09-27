@@ -136,7 +136,7 @@ try{
   await page.screenshot({path:path.join(out,'20260927-roundtables-preset-claude.png')});
   await page.locator('#edit-preset').click();await page.locator('#preset-reset').click();await until(async()=>await page.locator('#preset-custom').isHidden(),'default restored');
   assert(!(await command('preview',{kind:'discuss',text:'',options:{style:'debate'}})).prompts[0].prompt.includes('请逐条反驳'));
-  await page.locator('[data-kind="ask"]').click();assert(await page.locator('#preset').isHidden());assert(!(await page.locator('#plain-note').isHidden()));
+  await page.locator('[data-kind="iterate"]').click();assert(await page.locator('#preset').isHidden());assert(!(await page.locator('#plain-note').isHidden()));
   checks.push('Preset shown with unified 队友N placeholders, user text styled separately and appended last; edit validates required slots, applies to sending, and restores default');
 
   // 6. The side panel page: its own toolbar replaces the brand row.

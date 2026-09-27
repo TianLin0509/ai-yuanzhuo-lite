@@ -49,7 +49,8 @@ globalThis.YuanzhuoAdapters = {
     busy:['model-response .markdown[aria-busy="true"]'],
     complete:['message-actions button[aria-label="Copy"]','message-actions button[aria-label*="Copy" i]','message-actions button[aria-label*="复制"]','.response-footer.complete'],
     code:{block:'code-block',language:'.code-block-decoration > span'},
-    mode:[{select:'button[aria-label^="Open mode picker"]',attr:'aria-label',pattern:/currently\s+(.+)$/i}],
+    // The button text is the mode in every UI language; the English aria-label is the signed-out fallback.
+    mode:[{select:'[data-test-id="bard-mode-menu-button"]'},{select:'button[aria-label^="Open mode picker"]',attr:'aria-label',pattern:/currently\s+(.+)$/i}],
     exclude:'.cdk-visually-hidden,model-thoughts,sources-list,.response-footer',
     root:['chat-window','main','[role="main"]'],
     conversation:/\/app\/[^/]+/
@@ -58,16 +59,19 @@ globalThis.YuanzhuoAdapters = {
   // data-message-complete when finished. Older builds used data-message-author-role.
   chatgpt: {
     input:['textarea#mobile-composer-prompt','textarea[name="prompt"]','#prompt-textarea[contenteditable="true"]','div.ProseMirror[contenteditable="true"]'],
-    answer:['li[data-message-role="assistant"]','[data-message-author-role="assistant"]'],
-    body:'[data-assistant-markdown],.markdown',
-    user:['li[data-message-role="user"]','[data-message-author-role="user"]'],
+    // 2026-09-27 layout: turns are search units keyed "…:user" / "…:assistant"; message ids live on the unit.
+    answer:['li[data-message-role="assistant"]','[data-message-author-role="assistant"]','[data-chatgpt-search-unit-key$=":assistant"]'],
+    body:'[data-assistant-markdown],.markdown,[data-markdown-text-style="assistant-message"]',
+    user:['li[data-message-role="user"]','[data-message-author-role="user"]','[data-chatgpt-search-unit-key$=":user"]'],
     userBody:'[data-user-message-copy],.whitespace-pre-wrap',
-    userKeyAttribute:'id',
-    send:['button[aria-label="Send message"]','button[aria-label="Send prompt"]','[data-testid="send-button"]','button[aria-label*="发送"]'],
+    userKeyAttribute:['id','data-chatgpt-search-message-ids'],
+    send:['button[aria-label="Send message"]','button[aria-label="Send prompt"]','[data-testid="send-button"]','button[aria-label="Send"]','button[aria-label*="发送"]'],
     stop:['button[aria-label="Stop streaming"]','button[aria-label*="Stop generating" i]','[data-testid="stop-button"]','button[aria-label*="Stop" i]:not([aria-label*="dictation" i])','button[aria-label*="停止"]'],
-    complete:['[data-message-complete]','[data-assistant-message-actions]','[data-testid="copy-turn-action-button"]'],
+    complete:['[data-message-complete]','[data-assistant-message-actions]','[data-testid="copy-turn-action-button"]','.turn-action-controls button[aria-label="Regenerate response"]'],
     exclude:'[data-message-attribution],[data-message-content-controls],[data-assistant-placeholder-slot]',
-    mode:[{select:'[data-testid="model-switcher-dropdown-button"]'}],
+    // 2026-09-27 code blocks: a div with a header (language name) and a <code>, no <pre>.
+    code:{block:'[data-markdown-copy="code-block"]',language:'[data-markdown-copy="exclude"] .truncate'},
+    mode:[{select:'[data-testid="model-switcher-dropdown-button"]'},{select:'button[aria-label="Select ChatGPT model"]'}],
     root:['main','[role="main"]'],
     conversation:/\/u?c\/[^/]+/
   },
