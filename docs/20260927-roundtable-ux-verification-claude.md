@@ -13,9 +13,13 @@
 
 另：保存上限 30 → 200 场并申请 unlimitedStorage；同一窗口的切换（关闭 / 新建 / 找回）逐个执行，连点两次不会留下孤儿标签页。
 
+独立审查发现两处竞态，已修复并补回归测试（旧代码下均失败）：
+- 两个窗口同时找回同一场圆桌：原先输的一方先丢了自己成员页的登记再报错，留下无人管理的标签页。现改为先原子占用窗口，成功后才动标签页与登记。
+- 同一窗口“发起一轮”与“关闭/新建/找回”同时发生：原先忙碌检查可能读到旧状态，关掉正要发送的标签页。现两者在同一窗口队列里排队：关闭要么看到新一轮而拒绝，要么先完成、随后的发送被拒绝（“这个窗口已换成另一场圆桌，本次没有发送”）。
+
 ## 离线验证（已执行）
 
-`npm run check` 全部通过：构建、语法、全部单测（含新增模板、assign、发送前拦截用例）、extension / desktop / roundtables / native-desktop / native-background。roundtables.mjs 连续 8 次通过。
+`npm run check` 全部通过：构建、语法、全部单测（含新增模板、assign、发送前拦截用例）、extension / desktop / roundtables / native-desktop / native-background。roundtables.mjs 连续 8 次通过（含两窗口同时找回的竞态用例）。
 
 ## 真实网站（已执行，无头测试浏览器，专用 Profile）
 

@@ -97,11 +97,30 @@ try{
   await page.bringToFront();await page.locator('#history').click();await page.waitForSelector('.history-row');
   assert.equal(await page.locator('.history-row',{has:page.locator('.badge.other')}).count(),1);await page.locator('#dialog-close').click();
   checks.push('History covers every window; a roundtable open elsewhere is switched to, never duplicated');
+  // Both windows recover the same closed roundtable at once: one gets it, the other keeps its own roundtable and tabs.
+  const commandPage=async win=>{await page.evaluate(({url,win})=>chrome.tabs.create({windowId:win,url,active:false}),{url:base+'sidepanel.html?race='+win,win});let p;await until(()=>(p=context.pages().find(x=>x.url()===base+'sidepanel.html?race='+win)),'command page '+win);return p;};
+  const [pa,pb]=[await commandPage(windowId),await commandPage(other.opened.windowId)];
+  const rawState=(p,win)=>p.evaluate(async win=>chrome.runtime.sendMessage({type:'YZ_COMMAND',windowId:win,action:'state'}),win);
+  await until(async()=>Object.values((await rawState(pb,other.opened.windowId)).session.bindings).filter(b=>b.tabId).length===3,'other window members connected');
+  const before={[windowId]:(await rawState(pa,windowId)).session,[other.opened.windowId]:(await rawState(pb,other.opened.windowId)).session};
+  const race=await Promise.all([[pa,windowId],[pb,other.opened.windowId]].map(([p,win])=>p.evaluate(async({win,id})=>chrome.runtime.sendMessage({type:'YZ_COMMAND',windowId:win,action:'open-here',sessionId:id}),{win,id:s.id})));
+  assert(race.every(r=>r.ok||/另一个窗口/.test(r.error)),JSON.stringify(race.map(r=>r.error)));
+  const owners=Object.entries((await rawState(pa,windowId)).open).filter(([id])=>id===s.id);assert.equal(owners.length,1,'exactly one window holds the recovered roundtable');
+  const winner=owners[0][1];
+  for(const [win,p] of [[windowId,pa],[other.opened.windowId,pb]]){
+    const now=(await rawState(p,win)).session;
+    if(win===winner)continue;
+    assert.equal(now.id,before[win].id,'the other window keeps its own roundtable');
+    await until(async()=>{const tabs=(await p.evaluate(w=>chrome.tabs.query({windowId:w}),win)).filter(t=>providerFor(t.url||t.pendingUrl)&&!(t.url||'').includes('unrelated'));const bound=Object.values((await rawState(p,win)).session.bindings).map(b=>b.tabId);return tabs.length===3&&tabs.every(t=>bound.includes(t.id));},'losing window keeps its three bound member tabs');
+  }
+  const settled=(await rawState(pa,windowId)).session.id;await pa.close();await pb.close();
+  await until(()=>page.url().includes(encodeURIComponent(settled)),'record page follows the race winner');await page.waitForSelector('#prompt');
+  checks.push('Two windows recovering the same roundtable at once: one wins, the other keeps its roundtable and bound tabs');
 
   // 5. Presets: shown with unified 队友N placeholders, editable, validated, used when sending, restorable.
   const seed=await command('state');const t=structuredClone(seed.session);const rr=makeRound('ask','预设测试问题',t);for(const j of rr.jobs)Object.assign(j,{status:'done',text:j.provider+'_PRESET_ANSWER',url:PROVIDERS[j.provider].url});t.rounds.push(rr);
   await page.evaluate(async t=>{await chrome.storage.local.set({['arena.session.'+t.id]:t});},t);await cdp.send('Target.closeTarget',{targetId:(await cdp.send('Target.getTargets')).targetInfos.find(x=>x.url===worker.url()).targetId});
-  await page.reload();await until(async()=>(await command('state')).session.rounds.length===1,'preset seed');
+  await page.reload();await until(async()=>(await command('state')).session.rounds.length===t.rounds.length,'preset seed');
   await page.locator('[data-kind="discuss"]').click();await page.waitForSelector('#preset:not([hidden])');
   assert.deepEqual(await page.locator('#preset-body .slot').allInnerTexts(),['队友1的回答','队友2的回答']);
   assert((await page.locator('#preset-body').innerText()).includes('这是第1轮辩论'));

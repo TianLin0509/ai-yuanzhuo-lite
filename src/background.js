@@ -143,11 +143,12 @@ async function switchWindow(windowId,next){
   // A tab opened a moment ago may not have committed its address yet; it is still the one this roundtable opened.
   const closing=[];
   if(current)for(const [provider,binding] of Object.entries(current.bindings||{})){if(!binding.tabId)continue;try{const tab=await chrome.tabs.get(binding.tabId);const address=tab.url||tab.pendingUrl||'';if(tab.windowId===windowId&&(providerFor(address)===provider||/^(about:blank)?$/.test(address)))closing.push(tab.id);}catch(error){if(!/No tab|Invalid tab/i.test(error.message))throw error;}}
-  if(current)await mutate(current.id,s=>{s.bindings=urlOnly(s.bindings);});
   const target=next||(await createSession([...preferredMembers])).id;
+  // Reserve the window first. If another window takes `next` meanwhile, nothing here has changed yet.
+  try{await workspaces.assign(windowId,target);}catch(error){if(!next)await discardIfEmpty(target);throw error;}
+  if(current)await mutate(current.id,s=>{s.bindings=urlOnly(s.bindings);});
   // Recovered bindings keep only the saved conversation URLs; stale tab IDs are never trusted.
   if(next)await mutate(next,s=>{s.bindings=urlOnly(s.bindings);});
-  await workspaces.assign(windowId,target);
   const tabs=await chrome.tabs.query({windowId}),mains=tabs.filter(t=>(t.url||t.pendingUrl||'').split(/[?#]/,1)[0]===chrome.runtime.getURL('main.html'));
   for(const tab of mains)await chrome.tabs.update(tab.id,{url:mainPage(target)});
   // Closing every tab would close the window (and its side panel), so keep the record page open.
@@ -216,7 +217,10 @@ async function command(message){
     case 'open':{if(!PROVIDERS[message.provider])throw new Error('未知成员。');const session=await loadSession(message.sessionId);const bound=session.bindings[message.provider];const tab=await connection(session.id,message.provider,{focus:true});if(bound?.url&&cleanUrl(tab.url)!==cleanUrl(bound.url))await chrome.tabs.update(tab.id,{url:bound.url});return state();}
     case 'start':{
       const options={...message.options,templates:await templates()};
-      const round=await mutate(message.sessionId,s=>{if(message.baseRoundId!==undefined&&message.baseRoundId!==(s.rounds.at(-1)?.id||null))throw new Error('最新轮次已经改变，请核对侧栏后再发送。');const r=makeRound(message.kind,message.text,s,options);s.rounds.push(r);if(s.rounds.length===1)s.title=r.prompt.slice(0,32)||'新的圆桌';return structuredClone(r);});
+      // Starting a round shares the window's switch queue, so closing or replacing this roundtable either sees
+      // the new round (and refuses) or runs first (and this start is refused), never half of each.
+      const create=async()=>{if(Number.isInteger(message.windowId)&&await workspaces.ownerForWindow(message.windowId)!==message.sessionId)throw new Error('这个窗口已换成另一场圆桌，本次没有发送。');return mutate(message.sessionId,s=>{if(message.baseRoundId!==undefined&&message.baseRoundId!==(s.rounds.at(-1)?.id||null))throw new Error('最新轮次已经改变，请核对侧栏后再发送。');const r=makeRound(message.kind,message.text,s,options);s.rounds.push(r);if(s.rounds.length===1)s.title=r.prompt.slice(0,32)||'新的圆桌';return structuredClone(r);});};
+      const round=await (Number.isInteger(message.windowId)?perWindow(message.windowId,create):create());
       await run(async()=>{const key='arena.draft.'+message.sessionId,data=await chrome.storage.local.get(key);if(data[key]?.text===message.text)await chrome.storage.local.set({[key]:{...data[key],text:'',revision:Math.max(Date.now()*1000,(data[key].revision||0)+1),writer:'sent'}});});
       await alarm();await Promise.all(round.jobs.map(j=>dispatch({sessionId:message.sessionId,roundId:round.id,jobId:j.id})));await alarm();return state();
     }
