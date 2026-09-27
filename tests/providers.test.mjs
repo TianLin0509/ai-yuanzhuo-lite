@@ -145,7 +145,7 @@ const PAGES={
   qwen:{
     html:`<div class="chat-room-outer-wrap"><div id="list"></div>
       <div role="textbox" aria-multiline="true" data-slate-editor="true" data-slate-node="value" contenteditable="true" id="editor"></div>
-      <button type="button" aria-label="添加附件"></button><button type="button" aria-label="发送消息" data-session-switch-target="send-query"></button><button type="button" aria-label="停止回答" hidden></button></div>`,
+      <button type="button" aria-label="添加附件"></button><button type="button">Qwen3.7-千问</button><button type="button" aria-label="快速">快速</button><button type="button" aria-label="发送消息" data-session-switch-target="send-query"></button><button type="button" aria-label="停止回答" hidden></button></div>`,
     setup:()=>{
       const editor=document.querySelector('#editor'),send=document.querySelector('[aria-label="发送消息"]'),stop=document.querySelector('[aria-label="停止回答"]'),list=document.querySelector('#list');let model='',n=0;
       // Slate: one element block per line; an empty line (and the empty editor) is a zero-width span with a <br>.
@@ -166,7 +166,7 @@ const PAGES={
       };
     },
     prompt:'第一行 千问\n\n  缩进保留 <x> & y',
-    expect:{text:['回答：第一行 千问','```python\nprint("CODE_OK")\n```','END_QWEN'],absent:['NOISE_CARD','编辑','1print','正在回答']}
+    expect:{text:['回答：第一行 千问','```python\nprint("CODE_OK")\n```','END_QWEN'],absent:['NOISE_CARD','编辑','1print','正在回答'],mode:'Qwen3.7-千问 快速'}
   }
 };
 

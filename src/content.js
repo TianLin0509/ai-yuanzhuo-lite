@@ -166,7 +166,8 @@
   // still cancels the send: the page's editor model may no longer hold the text.
   function handedOff(input,config,prompt){if(!config.editorHandoff)return input;const current=find(config.input);if(current&&current!==input&&current.tagName!==input.tagName&&(!input.isConnected||!visible(input)||!normalized(value(input)))&&sameText(value(current),prompt))return current;return input;}
   // Read-only: what the site shows as its current model / thinking mode. Nothing is clicked; unknown stays empty.
-  function readMode(config){const parts=[];for(const spec of config.mode||[]){const nodes=spec.all?[...document.querySelectorAll(spec.select)].filter(visible):[...document.querySelectorAll(spec.select)].filter(visible).slice(0,spec.first||!spec.pattern?1:50);
+  function readMode(config){const parts=[];for(const spec of config.mode||[]){// Plain specs read one element; pattern specs scan every candidate and (with first) stop at the first match.
+    let nodes=[...document.querySelectorAll(spec.select)].filter(visible);if(!spec.all&&!spec.pattern)nodes=nodes.slice(0,1);
     for(const node of nodes){let v=normalized(spec.attr?node.getAttribute(spec.attr)||'':node.innerText||node.textContent||'').replace(/\s+/g,' ');if(spec.pattern){const m=v.match(spec.pattern);if(!m)continue;v=m[1]||m[0];}if(spec.map)v=spec.map[v]||v;if(v&&!parts.includes(v))parts.push(v);if(spec.pattern&&spec.first)break;}}
     return parts.join(' ').slice(0,40);}
   async function prepare(message){
@@ -180,7 +181,9 @@
     const leftover=normalized(value(input)),reuse=!!leftover&&!!message.prompt&&sameText(leftover,message.prompt);
     if(leftover&&!reuse)throw new Error('该网页有尚未发送的内容。请先处理原网页草稿，再重试。');
     if(find(config.stop)||(config.busy&&find(config.busy)))throw new Error('该网页仍在生成其他回答，请等待结束。');
-    return {baseline:snapshot(config),url:cleanUrl(),reuse,mode:readMode(config)};
+    // The mode caption is informational; a site change there must never block sending.
+    let mode='';try{mode=readMode(config);}catch(error){console.info('[AI圆桌lite] 模式读取失败',error.message);}
+    return {baseline:snapshot(config),url:cleanUrl(),reuse,mode};
   }
   async function send(message){
     if(jobs.has(message.requestId))return {status:jobs.get(message.requestId).status,duplicate:true};
