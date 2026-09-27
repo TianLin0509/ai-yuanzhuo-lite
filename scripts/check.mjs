@@ -9,5 +9,6 @@ run(['--test',...fs.readdirSync(path.join(root,'tests')).filter(f=>f.endsWith('.
 run(['tests/extension.mjs']);
 run(['tests/desktop.mjs']);
 run(['tests/roundtables.mjs']);
+run(['tests/workflow.mjs']);
 run(['tests/native-desktop.mjs']);
 run(['tests/native-background.mjs']);

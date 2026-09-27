@@ -142,6 +142,28 @@ const PAGES={
     prompt:'第一行 过渡\n\n  缩进保留 <x> & y',
     expect:{text:['回答：第一行 过渡'],absent:['正在回答']}
   },
+  // ChatGPT 2026-09-27 (logged in, live): composer "Send" button, turns as search units "…:user" / "…:assistant",
+  // answer body [data-markdown-text-style], code blocks as div[data-markdown-copy="code-block"] without <pre>,
+  // and the action row with "Regenerate response" only after the answer is complete.
+  'chatgpt#2026-09-27':{
+    html:`<main><div id="thread"></div><form><div class="ProseMirror" contenteditable="true" aria-label="Ask ChatGPT"></div>
+      <button type="button" aria-label="Select ChatGPT model" data-codex-intelligence-trigger="true">Medium</button><button type="button" aria-label="Dictate"></button>
+      <button type="submit" aria-label="Send">↑</button></form></main>`,
+    setup:()=>{
+      const input=document.querySelector('.ProseMirror'),thread=document.querySelector('#thread');let n=0;
+      document.querySelector('form').addEventListener('submit',e=>e.preventDefault());
+      // Like ProseMirror: a paste becomes one paragraph per line, and the message is the paragraphs joined.
+      input.addEventListener('paste',e=>{e.preventDefault();const text=e.clipboardData.getData('text/plain');input.innerHTML=text.split('\n').map(line=>'<p>'+(line?line.replaceAll('&','&amp;').replaceAll('<','&lt;'):'<br>')+'</p>').join('');});
+      document.querySelector('[aria-label="Send"]').onclick=()=>{const text=[...input.children].map(p=>p.textContent).join('\n');window.sent.push(text);input.innerHTML='';n++;
+        const send=document.querySelector('[aria-label="Send"]');send.setAttribute('aria-label','Stop streaming');
+        thread.insertAdjacentHTML('beforeend',`<div class="group flex flex-col"><div class="flex flex-col gap-3"><div><h4 class="sr-only">You said:</h4><div data-chatgpt-search-unit-key="t-${n}:0:user" data-chatgpt-search-message-ids="u-${n}"><div class="bg-user-message"><div class="whitespace-pre-wrap"></div></div><button aria-label="Copy message"></button></div></div><div><div data-chatgpt-search-unit-key="t-${n}:2:assistant" data-chatgpt-search-message-ids="a-${n}"><h4 class="sr-only">ChatGPT said:</h4><div data-markdown-text-style="assistant-message"><p>正在回答</p></div></div></div></div></div>`);
+        const turn=thread.lastElementChild;turn.querySelector('.whitespace-pre-wrap').textContent=text;
+        setTimeout(()=>{turn.querySelector('[data-markdown-text-style]').innerHTML='<p>回答：'+text.split('\n')[0].replaceAll('<','&lt;')+'</p><div><div data-markdown-copy="code-block"><div data-markdown-copy="exclude"><div class="truncate">Python</div></div><div dir="ltr"><code class="whitespace-pre! block"><span>def add(a, b):\n    return a + b</span></code></div></div></div><p>END_GPT</p>';},500);
+        setTimeout(()=>{send.setAttribute('aria-label','Send');turn.insertAdjacentHTML('beforeend','<div class="turn-action-controls"><button aria-label="Copy"></button><button aria-label="Regenerate response"></button></div>');},1100);};
+    },
+    prompt:'第一行 GPT\n\n  缩进保留 <x> & y',
+    expect:{text:['回答：第一行 GPT','```python\ndef add(a, b):\n    return a + b\n```','END_GPT'],absent:['ChatGPT said','正在回答','Python\n'],mode:'Medium'}
+  },
   qwen:{
     html:`<div class="chat-room-outer-wrap"><div id="list"></div>
       <div role="textbox" aria-multiline="true" data-slate-editor="true" data-slate-node="value" contenteditable="true" id="editor"></div>

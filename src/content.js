@@ -2,6 +2,10 @@
   'use strict';
   if(globalThis.__yuanzhuoLite) return;
   const jobs=new Map();
+  // The question this script typed into the box and has not sent. Any real keystroke or paste by the user
+  // (a trusted input event) disowns it, so a draft the user typed is never cleared, even if the text matches.
+  let ownDraft=null,filling=false;
+  document.addEventListener('input',event=>{if(event.isTrusted&&!filling)ownDraft=null;},true);
   const diagnostics={observers:0,timers:0,reads:0,lastError:'',activeRequest:null};
   const cleanUrl=()=>location.origin+location.pathname;
   const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
@@ -135,6 +139,11 @@
   function limitNotice(config){if(!config.limit)return '';for(const selector of config.limit.selectors)for(const el of document.querySelectorAll(selector)){const text=normalized(el.textContent).replace(/\s+/g,' ');if(visible(el)&&config.limit.text.test(text))return text.slice(0,80);}return '';}
   function assertNoLimit(config){const notice=limitNotice(config);if(notice)throw new Error('网页提示额度已用完（'+notice+'），未发送本轮提问。请等待额度恢复或在原网页处理。');}
   function assertNoAttachments(config){if(config.draftAttachment&&find(config.draftAttachment))throw new Error('该网页有尚未发送的附件，请先处理原网页附件草稿；未发送本轮提问。');}
+  function clearInput(input){
+    input.focus();
+    if(input.tagName==='TEXTAREA'){Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(input,'');input.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'deleteContentBackward'}));return;}
+    const selection=getSelection(),range=document.createRange();range.selectNodeContents(input);selection.removeAllRanges();selection.addRange(range);document.execCommand('delete',false);
+  }
   async function fill(input,text,config,isCancelled){
     input.focus();
     if(input.tagName==='TEXTAREA'){Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(input,text);input.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:text}));input.dispatchEvent(new Event('change',{bubbles:true}));}
@@ -178,7 +187,10 @@
     if(loginRequired(config))throw new Error('该网页尚未登录。请在原网页登录后再发送；未发送本轮提问。');
     assertNoAttachments(config);assertNoLimit(config);
     const input=find(config.input);if(!input)throw new Error('未找到可用输入框。请先打开网页完成登录或验证。');
-    const leftover=normalized(value(input)),reuse=!!leftover&&!!message.prompt&&sameText(leftover,message.prompt);
+    let leftover=normalized(value(input));const reuse=!!leftover&&!!message.prompt&&sameText(leftover,message.prompt);
+    // An earlier round's own question that never went out (failed or skipped member) may still sit in the box.
+    // It is ours, not the user's draft, so clear it rather than block every later round on this site.
+    if(leftover&&!reuse&&ownDraft&&sameText(leftover,ownDraft)&&(message.stale||[]).some(old=>sameText(leftover,old))){clearInput(input);leftover=normalized(value(input));if(leftover)throw Object.assign(new Error('网页输入框里残留上一轮未发出的提问，未能清空。请在原网页删掉后重试。'),{notSent:true});}
     if(leftover&&!reuse)throw new Error('该网页有尚未发送的内容。请先处理原网页草稿，再重试。');
     if(find(config.stop)||(config.busy&&find(config.busy)))throw new Error('该网页仍在生成其他回答，请等待结束。');
     // The mode caption is informational; a site change there must never block sending.
@@ -197,9 +209,10 @@
     job.navigationOpen=!job.boundConversation||/\/chat\/local[_-]/.test(location.pathname);
     jobs.set(job.requestId,job);
     try{
-      if(!reuse)await fill(input,message.prompt,config,()=>job.cancelled);if(job.cancelled)return {status:'stopped'};assertNoAttachments(config);
+      if(!reuse){filling=true;try{await fill(input,message.prompt,config,()=>job.cancelled);}finally{filling=false;}ownDraft=message.prompt;}if(job.cancelled)return {status:'stopped'};assertNoAttachments(config);
       let button=find(config.send);
-      for(let i=0;i<8&&!available(button);i++){await sleep(160);if(job.cancelled)return {status:'stopped'};button=find(config.send);}
+      // Background tabs render slowly (Claude, ChatGPT): the button can appear seconds after the text.
+      for(let i=0;i<40&&!available(button);i++){await sleep(200);if(job.cancelled)return {status:'stopped'};button=find(config.send);}
       if(!available(button)){retire(job);throw new Error('未找到可用发送按钮，文字保留在网页中，未自动按回车或重试。');}
       // Nothing may yield between final ownership/integrity checks and the click.
       assertNoAttachments(config);assertNoLimit(config);
@@ -207,7 +220,7 @@
       if(!input.isConnected||find(config.input)!==input)throw new Error('发送前网页输入框已变化，已取消发送，请检查原网页。');
       if(cleanUrl()!==message.baseline.url)throw new Error('发送前网页对话已变化，已取消发送。');
       if(!sameText(value(input),message.prompt))throw new Error('发送前网页输入内容已变化，已取消发送，请检查原网页。');
-      job.dispatched=true;watch(job);button.click();job.sending=false;
+      ownDraft=null;job.dispatched=true;watch(job);button.click();job.sending=false;
       emit(job,'unconfirmed','', '已点击发送，正在核对网页响应；不要重复发送。');
       await sleep(450);inspect(job,true);
       return {status:job.status,phase:'attempted'};
@@ -235,7 +248,7 @@
   function stop(message){const job=jobs.get(message.requestId);if(job&&!job.cancelled){const button=message.stopGeneration?find(job.config.stop):null;job.status='stopped';retire(job);if(available(button)){button.click();return {stopped:true,pageStopped:true};}}else if(!job){retire({requestId:message.requestId,status:'stopped',sequence:0});}return {stopped:true,pageStopped:false};}
   chrome.runtime.onMessage.addListener((message,sender,respond)=>{
     if(sender.id!==chrome.runtime.id||!message.type?.startsWith('YZ_'))return false;
-    (async()=>{switch(message.type){case 'YZ_PING':return {ready:true,diagnostics};case 'YZ_PREPARE':return prepare(message);case 'YZ_SEND':return send(message);case 'YZ_REREAD':return reread(message);case 'YZ_STOP':return stop(message);case 'YZ_STATUS':{const job=jobs.get(message.requestId);return {known:!!job,status:job?.status,active:!!job&&!job.cancelled,sequence:job?.sequence||0};}default:throw new Error('未知网页操作。');}})().then(result=>respond({ok:true,...result}),error=>respond({ok:false,error:error.message,code:error.code,question:error.question,
+    (async()=>{switch(message.type){case 'YZ_PING':return {ready:true,diagnostics};case 'YZ_PREPARE':return prepare(message);case 'YZ_SEND':return send(message);case 'YZ_REREAD':return reread(message);case 'YZ_STOP':return stop(message);case 'YZ_LATEST_QUESTION':{const config=globalThis.YuanzhuoAdapters[message.provider];if(!config)throw new Error('不支持该网页。');const last=users(config).at(-1);return {question:last?userText(last,config):'',url:cleanUrl()};}case 'YZ_STATUS':{const job=jobs.get(message.requestId);return {known:!!job,status:job?.status,active:!!job&&!job.cancelled,sequence:job?.sequence||0};}default:throw new Error('未知网页操作。');}})().then(result=>respond({ok:true,...result}),error=>respond({ok:false,error:error.message,code:error.code,question:error.question,
       // Send errors raised before the click (all but the post-click path) mean nothing reached the site.
       notSent:message.type==='YZ_SEND'?error.notSent??true:undefined}));return true;
   });
