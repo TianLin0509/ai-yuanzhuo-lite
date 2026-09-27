@@ -111,7 +111,7 @@ async function dispatch(ref){
     job=await supportedJob(ref);if(!job){await support.release(tab.id,ref.requestId);return;}
     // Our own earlier questions to this site (recent rounds): if one never went out, the page may still hold it.
     const stale=(await loadSession(ref.sessionId)).rounds.slice(-6).flatMap(r=>r.jobs).filter(j=>j.provider===job.provider&&j.id!==job.id&&j.prompt).map(j=>j.prompt);
-    const preparation=await pageMessage(tab.id,{type:'YZ_PREPARE',provider:job.provider,prompt:job.prompt,stale});
+    const preparation=await pageMessage(tab.id,{type:'YZ_PREPARE',provider:job.provider,prompt:job.prompt,stale,clearDraft:ref.clearDraft||''});
     await workspaces.validateTab(ref.sessionId,await chrome.tabs.get(tab.id));
     if(!sameConversation(job.provider,preparation.url,(await loadSession(ref.sessionId)).bindings[job.provider].url))throw new Error('准备发送时网页已切换对话，已取消发送。请点“原网页”核对。');
     await updateJob(ref,j=>{if(ACTIVE.has(j.status)){j.baseline=preparation.baseline;j.url=preparation.url;j.mode=preparation.mode||'';j.status='sending';j.phase='prepared';}});
@@ -123,6 +123,8 @@ async function dispatch(ref){
   }catch(error){await followStartedChat(ref);await updateJob(ref,j=>{if(ACTIVE.has(j.status)){
     // The page reports a failure before its Send click as definitely not sent, so a retry cannot duplicate it.
     if(error.notSent===true)j.phase='not_sent';
+    // Text found in the site's box that is not ours: kept so the user can see it and choose to clear it.
+    j.pageDraft=error.code==='PAGE_DRAFT'&&typeof error.question==='string'?error.question:'';
     j.status=j.phase==='attempted'?'attention':'error';j.error=error.message;j.updatedAt=Date.now();}});await releaseSupport(ref);}
 }
 async function locateEvent(event,sender){
@@ -274,7 +276,7 @@ async function command(message){
       else if(message.operation==='retry'){
         if(ACTIVE.has(job.status))throw new Error('该成员仍在进行，请先停止。');
         if(job.phase==='attempted'&&!message.confirmDuplicate)throw new Error('此前发送结果不确定，重新发送可能重复。请先重新提取，或明确确认重发。');
-        const requestId=await updateJob(ref,(j,s)=>{if(s.rounds.at(-1)?.id!==ref.roundId||ACTIVE.has(j.status))throw new Error('该回答状态已变化，请刷新后重试。');if(['done','skipped'].includes(j.status))throw new Error('该轮已经结束，请在新一轮继续提问。');j.requestId=id();j.sequence=0;j.status='queued';j.phase='not_sent';j.text='';j.format='plain';j.baseline=null;j.anchor=null;j.url='';j.error='';j.updatedAt=Date.now();return j.requestId;});if(!requestId)throw new Error('该回答状态已变化，请刷新后重试。');await alarm();await dispatch({...ref,requestId});
+        const requestId=await updateJob(ref,(j,s)=>{if(s.rounds.at(-1)?.id!==ref.roundId||ACTIVE.has(j.status))throw new Error('该回答状态已变化，请刷新后重试。');if(['done','skipped'].includes(j.status))throw new Error('该轮已经结束，请在新一轮继续提问。');j.requestId=id();j.sequence=0;j.status='queued';j.phase='not_sent';j.pageDraft='';j.text='';j.format='plain';j.baseline=null;j.anchor=null;j.url='';j.error='';j.updatedAt=Date.now();return j.requestId;});if(!requestId)throw new Error('该回答状态已变化，请刷新后重试。');await alarm();await dispatch({...ref,requestId,clearDraft:typeof message.clearDraft==='string'?message.clearDraft:''});
       }else if(message.operation==='reread'){
         if(ACTIVE.has(job.status))throw new Error('请先停止该成员的自动读取。');
         // Without force the page must prove the latest question is this round's; force follows the user's confirmation.

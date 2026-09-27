@@ -35,7 +35,9 @@ async function refresh(){
   }catch(e){error(e.message);}finally{refreshing=false;if(refreshAgain){refreshAgain=false;scheduleRefresh();}}
 }
 // A newer build in the installed folder: offer an in-place reload (history and windows are kept).
-function renderUpdate(){const b=$('#update');if(!b)return;const available=model.build?.available;b.hidden=!available;if(available){b.textContent='更新到新版本';b.title=`当前 ${model.build.running}，可更新到 ${available}。本轮进行中时不能更新。`;b.disabled=busy(model.session);}}
+// The version is always visible so the user can tell at a glance which build is running.
+function renderVersion(){const v='v'+chrome.runtime.getManifest().version,build=model?.build?.running;for(const el of $$('.app-version')){el.textContent=v;el.title=`AI圆桌lite ${v}${build?' · 构建 '+build:''}`;}}
+function renderUpdate(){renderVersion();const b=$('#update');if(!b)return;const available=model.build?.available;b.hidden=!available;if(available){b.textContent='更新到新版本';b.title=`当前 ${model.build.running}，可更新到 ${available}。本轮进行中时不能更新。`;b.disabled=busy(model.session);}}
 function persistReader(){chrome.storage.local.set({[readerKey]:reader}).catch(e=>error('阅读位置保存失败：'+e.message));}
 const draftBackupKey=()=> 'arena.pending-draft.'+model.session.id;
 async function recoverDraft(){
@@ -100,7 +102,7 @@ function renderController(){
   const signature=JSON.stringify([s.members,s.bindings,r?.jobs.map(j=>[j.provider,j.status,j.error,length(j.text),!!j.baseline,j.phase,j.mode])]);
   if($('#member-strip').dataset.signature!==signature){$('#member-strip').dataset.signature=signature;$('#member-strip').innerHTML=s.members.map(p=>{
     const j=r?.jobs.find(j=>j.provider===p),bound=s.bindings[p]?.tabId,status=j?LABELS[j.status]+(j.text?`，${length(j.text)} 字`:''):(bound?'网页已连接':'未连接'),dot=j?j.status:bound?'connected':'idle';const action=(op,label)=>`<button data-provider="${p}" data-op="${op}">${label}</button>`;
-    let recovery='';if(j?.status==='waiting')recovery+=action('skip','跳过');else if(j&&!ACTIVE.has(j.status)){if(/登录|验证|额度|captcha/i.test(j.error||''))recovery+=action('open','打开网页');recovery+=action('reread','重新提取');if(!['done','skipped'].includes(j.status))recovery+=action('retry','重试发送')+action('skip','跳过');if(j.status==='attention'&&j.text)recovery+=action('confirm','确认已完成');}
+    let recovery='';if(j?.status==='waiting')recovery+=action('skip','跳过');else if(j&&!ACTIVE.has(j.status)){if(/登录|验证|额度|captcha/i.test(j.error||''))recovery+=action('open','打开网页');recovery+=action('reread','重新提取');if(!['done','skipped'].includes(j.status))recovery+=(j.pageDraft?action('cleardraft','清空网页草稿并重试'):'')+action('retry','重试发送')+action('skip','跳过');if(j.status==='attention'&&j.text)recovery+=action('confirm','确认已完成');}
     const edit=`<button class="edit-op" data-provider="${p}" data-op="replace" title="换成其他 AI">换人</button>${s.members.length>2?`<button class="edit-op" data-provider="${p}" data-op="remove" title="从下一轮移出">移出</button>`:''}`;
     return `<div class="member-row" data-status="${j?.status||'idle'}"><span class="dot" data-status="${dot}"></span><button class="member-chip ${bound?'connected':''}" data-provider="${p}" data-op="open" title="打开 ${PROVIDERS[p].name} 网页">${PROVIDERS[p].name}</button>${j?.mode?`<small class="mode" title="发送时网页显示的模型与模式">${esc(j.mode)}</small>`:''}<span class="state" data-status="${j?.status||'idle'}">${status}</span><span class="recovery">${recovery}${edit}</span>${j?.error?`<p class="member-error">${esc(j.error)}</p>`:''}${!j?.error&&s.bindings[p]?.note?`<p class="member-error">${esc(s.bindings[p].note)}</p>`:''}</div>`;
   }).join('')+(s.members.length<MAX_MEMBERS?`<button class="add-member" data-op="add">＋ 添加成员</button>`:'');}
@@ -160,7 +162,9 @@ function members(){
   const boxes=$$('input[name="member"]'),limit=()=>{const full=boxes.filter(x=>x.checked).length>=MAX_MEMBERS;for(const x of boxes)x.disabled=full&&!x.checked;$('#member-limit').hidden=!full;};boxes.forEach(x=>x.addEventListener('change',limit));limit();
   $('#save-members').onclick=async()=>{const members=boxes.filter(x=>x.checked).map(x=>x.value);if(members.length<2){error('至少选择两位成员。');return;}close();await act('members',{members});};
 }
-async function jobAction(j,operation){const args={roundId:latest().id,jobId:j.id,operation};if(operation==='retry'&&j.phase==='attempted'){dialog('确认重新发送？','<p>此前已尝试发送，重发可能在网页产生重复问题。建议先重新提取。</p><button id="confirm-retry">确认重发这一家</button>');$('#confirm-retry').onclick=()=>{close();act('job',{...args,confirmDuplicate:true});};return;}
+async function jobAction(j,operation){const args={roundId:latest().id,jobId:j.id,operation};
+  // Clearing the site's box needs the user's explicit look at exactly what will be removed.
+  if(operation==='cleardraft'){dialog(`清空 ${PROVIDERS[j.provider].name} 输入框里的文字？`,`<p>网页输入框里有下面这段还没发出的文字，可能是你写的，也可能是之前没发出去的提问。确认后只删掉这段，再发送本轮。</p><pre class="draft-preview">${esc(j.pageDraft)}</pre><button id="confirm-clear" class="primary">清空并重试发送</button>`);$('#confirm-clear').onclick=()=>{close();act('job',{...args,operation:'retry',clearDraft:j.pageDraft});};return;}if(operation==='retry'&&j.phase==='attempted'){dialog('确认重新发送？','<p>此前已尝试发送，重发可能在网页产生重复问题。建议先重新提取。</p><button id="confirm-retry">确认重发这一家</button>');$('#confirm-retry').onclick=()=>{close();act('job',{...args,confirmDuplicate:true});};return;}
   const result=await act('job',args);
   // AI-Arena's manual extraction: when the page's latest question cannot be matched to this round
   // (edited or sent by hand on the site), show it and read its answer only after the user confirms.

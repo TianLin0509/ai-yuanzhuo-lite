@@ -15,7 +15,7 @@ python -B scripts/merge_task.py TASK_BRANCH --expected-head FULL_CANDIDATE_SHA -
 dry-run 会短暂试合并并启动隔离 fixture 浏览器，再撤销已知试合并。主目录不可同时作为用户日常加载的扩展目录。
 退出码 0 为成功或已包含；1 为测试失败且已还原；2 为前提失败或现场保留；3 为已提交但后续步骤失败。2/3 时先检查现场，不盲目重试或 reset。
 
-合并脚本不 fetch/push/rebase、不升级版本、不发布。真实账号测试、GitHub 同步和扩展发布按用户授权单独执行。
+合并脚本不 fetch/push/rebase、不改版本、不发布；版本号由 Author 在任务分支抬好，合并前核对它已高于主干。真实账号测试、GitHub 同步和扩展发布按用户授权单独执行。
 
 ```text
 RESULT: PASS 或 FAIL
