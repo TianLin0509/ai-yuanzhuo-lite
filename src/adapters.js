@@ -1,6 +1,8 @@
 // 精确选择器优先；站点知识参考 AI-Arena 与 2026-09 实测，不继承旧版全局补丁、兜底全文扫描与自动重发。
 globalThis.YuanzhuoAdapters = {
   deepseek: {
+    // Verified 2026-09-29 (signed in): a scripted Enter in the composer sends; used when no send button is usable.
+    enterSend:true,
     input:['#chat-input','textarea[placeholder]'],
     // DeepThink puts its reasoning in .ds-think-content (also .ds-markdown); the reply itself is main-content (2026-09-26).
     answer:['.ds-markdown.ds-assistant-message-main-content','.ds-markdown:not(.ds-think-content .ds-markdown)','[data-role="assistant"]'],
@@ -39,6 +41,8 @@ globalThis.YuanzhuoAdapters = {
   // Gemini 2026-09: Quill editor. Stop disappears ~1.5 s before the answer body drops
   // aria-busy; message-actions and the "complete" footer appear only after that.
   gemini: {
+    // Verified 2026-09-29 (signed in): a scripted Enter in the composer sends; used when no send button is usable.
+    enterSend:true,
     input:['rich-textarea .ql-editor[contenteditable="true"]','.ql-editor[contenteditable="true"]','[role="textbox"][contenteditable="true"]'],
     answer:['model-response'],
     body:'.markdown.markdown-main-panel',
@@ -58,7 +62,7 @@ globalThis.YuanzhuoAdapters = {
   // ChatGPT 2026-09 (StyleX build): messages are li[data-message-role]; the assistant item gains
   // data-message-complete when finished. Older builds used data-message-author-role.
   chatgpt: {
-    input:['textarea#mobile-composer-prompt','textarea[name="prompt"]','#prompt-textarea[contenteditable="true"]','div.ProseMirror[contenteditable="true"]'],
+    input:['textarea#mobile-composer-prompt','textarea[name="prompt"]','#prompt-textarea[contenteditable="true"]','[contenteditable="true"][aria-label="Ask ChatGPT"]','div.ProseMirror[contenteditable="true"]'],
     // 2026-09-27 layout: turns are search units keyed "…:user" / "…:assistant"; message ids live on the unit.
     answer:['li[data-message-role="assistant"]','[data-message-author-role="assistant"]','[data-chatgpt-search-unit-key$=":assistant"]'],
     body:'[data-assistant-markdown],.markdown,[data-markdown-text-style="assistant-message"]',
@@ -68,7 +72,12 @@ globalThis.YuanzhuoAdapters = {
     send:['button[aria-label="Send message"]','button[aria-label="Send prompt"]','[data-testid="send-button"]','button[aria-label="Send"]','button[aria-label*="发送"]'],
     stop:['button[aria-label="Stop streaming"]','button[aria-label*="Stop generating" i]','[data-testid="stop-button"]','button[aria-label*="Stop" i]:not([aria-label*="dictation" i])','button[aria-label*="停止"]'],
     complete:['[data-message-complete]','[data-assistant-message-actions]','[data-testid="copy-turn-action-button"]','.turn-action-controls button[aria-label="Regenerate response"]'],
-    exclude:'[data-message-attribution],[data-message-content-controls],[data-assistant-placeholder-slot]',
+    exclude:'[data-message-attribution],[data-message-content-controls],[data-assistant-placeholder-slot],[data-markdown-copy="exclude"]',
+    // Writing blocks (email / document drafts) carry ChatGPT's own copy of their body; an email subject sits in its own box.
+    copyBlock:{block:'[data-markdown-copy="rich-block"][data-markdown-copy-text]',attr:'data-markdown-copy-text',title:'textarea'},
+    // A writing block whose body has not been filled in yet (it re-mounts after the answer ends; slower in background tabs).
+    pending:['[data-testid="chatgpt-writing-block"]:not([data-markdown-copy-text])','[data-testid="chatgpt-writing-block"][data-markdown-copy-text=""]'],
+    enterSend:true,
     // 2026-09-27 code blocks: a div with a header (language name) and a <code>, no <pre>.
     code:{block:'[data-markdown-copy="code-block"]',language:'[data-markdown-copy="exclude"] .truncate'},
     mode:[{select:'[data-testid="model-switcher-dropdown-button"]'},{select:'button[aria-label="Select ChatGPT model"]'}],
@@ -77,6 +86,8 @@ globalThis.YuanzhuoAdapters = {
   },
   // Claude: ProseMirror editor; the answer body reports data-is-streaming while generating.
   claude: {
+    // Verified 2026-09-29 (signed in): a scripted Enter in the composer sends; used when no send button is usable.
+    enterSend:true,
     input:['div.ProseMirror[contenteditable="true"]','[contenteditable="true"][role="textbox"]'],
     answer:['[data-is-streaming]'],
     body:'.font-claude-response,.font-claude-message',
@@ -124,6 +135,8 @@ globalThis.YuanzhuoAdapters = {
   // 千问 (www.qianwen.com) 2026-09: Slate editor; answers carry a feedback toolbar once finished.
   // Recommendation cards after the answer are excluded (AI-Arena qwen-noise-filter).
   qwen: {
+    // Verified 2026-09-29 (signed in): a scripted Enter after the pasted text sends; used when no send button is usable.
+    enterSend:true,
     input:['[data-slate-editor="true"][contenteditable="true"]','[role="textbox"][contenteditable="true"]'],
     answer:['[data-chat-answers-wrap]'],
     body:'.qk-markdown',

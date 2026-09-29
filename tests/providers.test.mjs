@@ -164,6 +164,46 @@ const PAGES={
     prompt:'第一行 GPT\n\n  缩进保留 <x> & y',
     expect:{text:['回答：第一行 GPT','```python\ndef add(a, b):\n    return a + b\n```','END_GPT'],absent:['ChatGPT said','正在回答','Python\n'],mode:'Medium'}
   },
+  // ChatGPT 2026-09-29 (live): an earlier answer holds an editable email writing block (a ProseMirror "Start writing"
+  // editor placed before the composer), an earlier question shows an edit box's own "Send", and the new answer's
+  // writing block gets its body a few seconds after the answer ends. Only the composer may be typed into and sent.
+  'chatgpt#writing-blocks':{
+    html:`<main><div id="thread"><div class="group"><div data-chatgpt-search-unit-key="t-0:0:user" data-chatgpt-search-message-ids="u-0"><div class="whitespace-pre-wrap">旧问题</div><button aria-label="Send">编辑后发送</button></div>
+      <div data-chatgpt-search-unit-key="t-0:2:assistant" data-chatgpt-search-message-ids="a-0"><div data-markdown-text-style="assistant-message"><p>旧回答</p>
+      <div data-testid="chatgpt-writing-block" data-markdown-copy="rich-block" data-markdown-copy-text="旧邮件正文"><header><div>Email</div><button>Connect email</button></header><div class="ProseMirror" contenteditable="true" aria-label="Start writing"><p>旧邮件正文</p></div></div></div></div>
+      <div class="turn-action-controls"><button aria-label="Regenerate response"></button></div></div></div>
+      <form><div class="ProseMirror" contenteditable="true" aria-label="Ask ChatGPT"></div><button type="button" aria-label="Select ChatGPT model">Medium</button><button type="submit" aria-label="Send">↑</button></form></main>`,
+    setup:()=>{
+      const input=document.querySelector('[aria-label="Ask ChatGPT"]'),thread=document.querySelector('#thread'),old=document.querySelector('[aria-label="Start writing"]');let n=0;
+      document.querySelector('form').addEventListener('submit',e=>e.preventDefault());
+      for(const editor of [input,old])editor.addEventListener('paste',e=>{e.preventDefault();const text=e.clipboardData.getData('text/plain');editor.innerHTML=text.split('\n').map(line=>'<p>'+(line?line.replaceAll('&','&amp;').replaceAll('<','&lt;'):'<br>')+'</p>').join('');});
+      document.querySelector('[data-chatgpt-search-unit-key="t-0:0:user"] [aria-label="Send"]').onclick=()=>window.sent.push('EDIT-BOX-SEND:'+old.innerText);
+      const send=document.querySelector('form [aria-label="Send"]');
+      send.onclick=()=>{const text=[...input.children].map(p=>p.textContent).join('\n');window.sent.push(text);window.oldEmail=old.innerText;input.innerHTML='';n++;send.setAttribute('aria-label','Stop streaming');
+        thread.insertAdjacentHTML('beforeend',`<div class="group"><div data-chatgpt-search-unit-key="t-${n}:0:user" data-chatgpt-search-message-ids="u-${n}"><div class="whitespace-pre-wrap"></div></div><div data-chatgpt-search-unit-key="t-${n}:2:assistant" data-chatgpt-search-message-ids="a-${n}"><div data-markdown-text-style="assistant-message"><p>正在回答</p></div></div></div>`);
+        const turn=thread.lastElementChild;turn.querySelector('.whitespace-pre-wrap').textContent=text;
+        setTimeout(()=>{turn.querySelector('[data-markdown-text-style]').innerHTML='<p>INTRO_LINE</p><div data-testid="chatgpt-writing-block" data-markdown-copy="rich-block"><header><div>Email</div><button>Connect email</button></header><div><span>Recipients</span></div><div><textarea>SUBJECT_LINE</textarea></div><div data-markdown-copy-content="true"><div role="textbox"></div></div></div><div><button><span>增加后续建议</span></button></div><p>OUTRO_LINE</p>';},400);
+        setTimeout(()=>{send.setAttribute('aria-label','Send');turn.insertAdjacentHTML('beforeend','<div class="turn-action-controls"><button aria-label="Regenerate response"></button></div>');},900);
+        // The body arrives well after the end signal, as observed live in background tabs.
+        setTimeout(()=>{const wb=turn.querySelector('[data-testid="chatgpt-writing-block"]');wb.setAttribute('data-markdown-copy-text','EMAIL_BODY 第一行\n\n第二行');wb.querySelector('[role="textbox"]').innerHTML='<p>EMAIL_BODY 第一行</p><p>第二行</p>';},4200);};
+    },
+    prompt:'新问题 WB\n\n  第二段',
+    expect:{text:['INTRO_LINE','**SUBJECT_LINE**','EMAIL_BODY 第一行\n\n第二行','OUTRO_LINE'],absent:['Connect email','Recipients','增加后续建议','正在回答','旧邮件正文'],mode:'Medium',check:async page=>{assert.equal(await page.evaluate(()=>window.oldEmail),'旧邮件正文','the earlier email block is untouched');}}
+  },
+  // No usable send button: sites verified to send on Enter get a scripted Enter; the watcher still confirms the turn.
+  'chatgpt#enter-only':{
+    html:`<main><div id="thread"></div><form><div class="ProseMirror" contenteditable="true" aria-label="Ask ChatGPT"></div><button type="button" aria-label="Dictate"></button></form></main>`,
+    setup:()=>{
+      const input=document.querySelector('[aria-label="Ask ChatGPT"]'),thread=document.querySelector('#thread');let n=0;
+      input.addEventListener('paste',e=>{e.preventDefault();const text=e.clipboardData.getData('text/plain');input.innerHTML=text.split('\n').map(line=>'<p>'+(line?line.replaceAll('&','&amp;').replaceAll('<','&lt;'):'<br>')+'</p>').join('');});
+      input.addEventListener('keydown',e=>{if(e.key!=='Enter'||e.shiftKey||e.isComposing)return;e.preventDefault();const text=[...input.children].map(p=>p.textContent).join('\n');if(!text.trim())return;window.sent.push(text);input.innerHTML='';n++;
+        thread.insertAdjacentHTML('beforeend',`<div class="group"><div data-chatgpt-search-unit-key="t-${n}:0:user" data-chatgpt-search-message-ids="u-${n}"><div class="whitespace-pre-wrap"></div></div><div data-chatgpt-search-unit-key="t-${n}:2:assistant" data-chatgpt-search-message-ids="a-${n}"><div data-markdown-text-style="assistant-message"><p>回答：ENTER_OK</p></div></div></div>`);
+        thread.lastElementChild.querySelector('.whitespace-pre-wrap').textContent=text;
+        setTimeout(()=>thread.lastElementChild.insertAdjacentHTML('beforeend','<div class="turn-action-controls"><button aria-label="Regenerate response"></button></div>'),500);});
+    },
+    prompt:'回车发送 ENTER',
+    expect:{text:['回答：ENTER_OK'],absent:[]}
+  },
   qwen:{
     html:`<div class="chat-room-outer-wrap"><div id="list"></div>
       <div role="textbox" aria-multiline="true" data-slate-editor="true" data-slate-node="value" contenteditable="true" id="editor"></div>
@@ -212,6 +252,7 @@ for(const [key,spec] of Object.entries(PAGES)){
    assert.equal(done.status,'done',provider+' must finish from its completion signal: '+done.error);
    for(const part of spec.expect.text)assert(done.text.includes(part),provider+' answer must include '+JSON.stringify(part)+' — got: '+JSON.stringify(done.text));
    for(const part of spec.expect.absent)assert(!done.text.includes(part),provider+' answer must not include '+JSON.stringify(part)+' — got: '+JSON.stringify(done.text));
+   if(spec.expect.check)await spec.expect.check(page);
    await page.evaluate(p=>request({type:'YZ_STOP',requestId:'live-'+p}),provider);
    const d=await page.evaluate(()=>__yuanzhuoLite.diagnostics);assert.equal(d.observers,0);assert.equal(d.timers,0);
    // A second prompt must not be confused with the first answer.
