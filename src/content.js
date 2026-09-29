@@ -215,7 +215,8 @@
     if(config.transitional&&find(config.transitional))for(let i=0;i<50&&!find(config.readyWhen);i++)await sleep(300);
     // A saved chat that was just (re)loaded renders its history a moment after the page itself; the baseline below
     // must count those earlier questions, or this round's question cannot be told apart from them afterwards.
-    if(config.conversation.test(location.pathname))for(let i=0;i<33&&!users(config).length;i++)await sleep(300);
+    // Placeholder addresses of a chat not yet saved (豆包 /chat/local_…, ChatGPT /c/local-chatgpt:…) have no history.
+    if(config.conversation.test(location.pathname)&&!/\/(chat\/local[_-]|c\/local-chatgpt)/.test(decodeURIComponent(location.pathname)))for(let i=0;i<33&&!users(config).length;i++)await sleep(300);
     for(let i=0;i<50&&(find(config.stop)||(config.busy&&find(config.busy)));i++)await sleep(300);
     if(config.blocked&&find(config.blocked))throw new Error('网页要求人机验证，请先在原网页完成验证。');
     if(loginRequired(config))throw new Error('该网页尚未登录。请在原网页登录后再发送；未发送本轮提问。');
