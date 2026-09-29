@@ -151,3 +151,14 @@ test('Stopping a workflow while the next turn is being claimed: afterwards nothi
  await h.command({action:'state',windowId:1});await new Promise(r=>setTimeout(r,50));
  assert.equal(h.calls.filter(c=>c.type==='YZ_SEND').length,h.calls.slice(0,after).filter(c=>c.type==='YZ_SEND').length,'no send after the stop');
 });
+test('A member page Chrome reclaimed (discarded) is reloaded in place before sending, without switching tabs',async()=>{
+ const h=await harness();let discarded=true;const reloads=[],updates=[];
+ const get=h.chrome.tabs.get;h.chrome.tabs.get=async id=>({...await get(id),discarded:id===1&&discarded});
+ h.chrome.tabs.reload=async id=>{reloads.push(id);discarded=false;};
+ const update=h.chrome.tabs.update;h.chrome.tabs.update=async(id,props)=>{updates.push(props);return update(id,props);};
+ const state=await h.command({action:'start',sessionId:h.s.id,kind:'iterate',text:'after a long break'});
+ assert.deepEqual(reloads,[1],'the reclaimed page is reloaded once');
+ assert(!updates.some(p=>p.active),'no tab is brought to the front');
+ assert(h.calls.some(c=>c.type==='YZ_SEND'&&c.tabId===1),'the question is then sent to it');
+ assert.equal(state.session.rounds.at(-1).jobs.find(j=>j.provider==='deepseek').status!=='error',true);
+});

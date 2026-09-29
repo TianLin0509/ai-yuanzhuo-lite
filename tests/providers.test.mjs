@@ -125,6 +125,24 @@ const PAGES={
     prompt:'第一行 DS\n\n  缩进保留 <x> & y',
     expect:{text:['回答：第一行 DS','DS_FINAL'],absent:['THINK_SECRET'],mode:'深度思考'}
   },
+  // A page still building its composer when the round starts: preparing waits for it instead of failing.
+  'deepseek#late-composer':{
+    html:`<main><div id="list"></div><textarea id="chat-input" placeholder="给 DeepSeek 发送消息"></textarea>
+      <div class="ds-toggle-button" aria-pressed="true">DeepThink</div><div class="ds-toggle-button" aria-pressed="false">Search</div>
+      <button data-testid="send-button">发送</button><div role="button" aria-label="停止" hidden>■</div></main>`,
+    setup:()=>{
+      const input=document.querySelector('#chat-input'),send=document.querySelector('[data-testid="send-button"]'),stop=document.querySelector('[aria-label="停止"]'),list=document.querySelector('#list');let n=0;
+      send.onclick=()=>{const sent=input.value;window.sent.push(sent);input.value='';n+=2;stop.hidden=false;
+        list.insertAdjacentHTML('beforeend',`<div data-virtual-list-item-key="${n}"><div class="fbb737a4"></div></div><div data-virtual-list-item-key="${n+1}"><div class="ds-message"><div class="ds-think-content"><div class="ds-markdown"><p>THINK_SECRET 正在思考</p></div></div></div></div>`);
+        list.querySelector(`[data-virtual-list-item-key="${n}"] .fbb737a4`).textContent=sent;
+        const turn=list.querySelector(`[data-virtual-list-item-key="${n+1}"] .ds-message`);
+        setTimeout(()=>{turn.querySelector('.ds-think-content .ds-markdown').innerHTML='<p>THINK_SECRET 思考完毕</p>';turn.insertAdjacentHTML('beforeend','<div class="ds-markdown ds-assistant-message-main-content"><p>回答：'+sent.split('\n')[0]+'</p><p>DS_FINAL</p></div>');},500);
+        setTimeout(()=>{stop.hidden=true;turn.insertAdjacentHTML('afterend','<div><div role="button" data-testid="copy-button">复制</div></div>');},1100);};
+      const box=document.querySelector('#chat-input');box.remove();setTimeout(()=>document.querySelector('main').prepend(box),1500);
+    },
+    prompt:'第一行 DS\n\n  缩进保留 <x> & y',
+    expect:{text:['回答：第一行 DS','DS_FINAL'],absent:['THINK_SECRET'],mode:'深度思考'}
+  },
   // 豆包 new chat: only the placeholder textarea is mounted at first; typing into it goes nowhere until the
   // tiptap editor loads (AI圆桌 Android 2026-09-23). The adapter must wait for the real editor.
   'doubao#transitional':{
