@@ -7,7 +7,7 @@
 - 不注入 MAIN world 补丁，不改写网页的全局定时器、rAF、visibility/hasFocus 属性；不加 DNR、远程代码、PPT、token 仪表盘。Chrome 原生 CDP 焦点模拟是上一条的明确例外。
 - 只向用户选中的网页注入。发送不确定时不能自动重发；必须区分重试发送、重新提取与用户确认完成。禁止静默截断正文和上下文。
 - 初始仓库引导提交完成后启用 project-prep 钩子。后续主目录只做审查合并；任务使用独立 worktree 与独立 npm ci，禁止依赖 junction。读 `.agents/AUTHOR.md`、`.agents/MERGER.md`、`.agents/TESTING.md`。
-- 用户 Chrome 固定加载 `C:\VibeData\Extensions\AI-Yuanzhuo-Lite`；每次合并后 afterMerge 自动执行 `npm run install:local` 同步到该目录，扩展里出现“更新到新版本”，点一下原地重载，记录和窗口保留。这不是发布，不改版本号、不推送。
+- 用户 Chrome 固定加载 `C:\VibeData\Extensions\AI-Yuanzhuo-Lite`；每次合并后 afterMerge 自动执行 `npm run install:local` 同步到该目录，扩展里出现“更新到新版本”，点一下原地重载，记录和窗口保留。这不是发布，不推送；版本号按下面的规则随交付抬升。
 - 全部离线合并检查：`npm run check`；真实网站实测另用 `npm run browser:live`，登录由用户完成。fixture 通过不代表真实网站通过。
 - 不关闭用户浏览器或生产 AI Hub；浏览器 Profile 在 C:\VibeData\BrowserProfiles\AI-Yuanzhuo-Lite，测试浏览器只使用自身记录的 PID/端口。
 - 测试输出放 artifacts/，文件名带日期与席位。不得提交 Profile、Cookie、登录截图、用户对话或 .env。

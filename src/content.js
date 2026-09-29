@@ -28,6 +28,22 @@
   const sameText=(a,b)=>{const lines=s=>normalized(s).split('\n').map(line=>line.replace(/\s+$/,'')).filter(Boolean).join('\n');return lines(a)===lines(b);};
   const normalized=s=>String(s).replace(/\r\n/g,'\n').replace(/\u00a0/g,' ').replace(/[\u200b\ufeff]/g,'').trim();
   function find(selectors,root=document){for(const selector of selectors){const found=[...root.querySelectorAll(selector)].find(visible);if(found)return found;}return null;}
+  // Sites put editors inside messages too (ChatGPT writing blocks, edit-a-question boxes, canvases). The composer is
+  // the editor outside every message; with several left, the one sitting with a send or stop control, else the lowest.
+  const inMessage=(el,config)=>[...config.answer,...config.user].some(selector=>el.parentElement?.closest(selector));
+  function composerRoot(input,config){let root=input.parentElement;for(let i=0;root&&i<8;i++,root=root.parentElement){if(find(config.send,root)||find(config.stop,root))return root;}return null;}
+  function composerInput(config){
+    for(const selector of config.input){
+      const all=[...document.querySelectorAll(selector)].filter(visible);if(!all.length)continue;
+      // A site whose message selector also wraps the composer must not lose its input: fall back to every match.
+      const outside=all.filter(el=>!inMessage(el,config)),pool=outside.length?outside:all;if(pool.length===1)return pool[0];
+      const withControl=pool.filter(el=>composerRoot(el,config)),best=withControl.length?withControl:pool;
+      return best.reduce((a,b)=>b.getBoundingClientRect().bottom>a.getBoundingClientRect().bottom?b:a);
+    }
+    return null;
+  }
+  // The send button next to this composer; elsewhere only one that is not inside a message (an edit box's Send).
+  function sendButton(input,config){const root=composerRoot(input,config),near=root&&find(config.send,root);if(near)return near;for(const selector of config.send){const found=[...document.querySelectorAll(selector)].find(el=>visible(el)&&!inMessage(el,config));if(found)return found;}return null;}
   function answers(config){for(const selector of config.answer){const found=[...document.querySelectorAll(selector)].filter(el=>visible(el)&&normalized(el.textContent));if(found.length)return found;}return [];}
   function users(config){for(const selector of config.user){const found=[...document.querySelectorAll(selector)].filter(visible);if(found.length)return found;}return [];}
   const bodyNodes=(element,config)=>!element?[]:config.body&&!element.matches('[data-role="assistant"]')?[...element.querySelectorAll(config.body)]:[element];
@@ -63,6 +79,8 @@
     if(node.nodeType!==Node.ELEMENT_NODE)return '';
     const tag=node.tagName,md=child=>markdown(child,config);
     if(['SCRIPT','STYLE','BUTTON','SVG','NOSCRIPT'].includes(tag)||node.getAttribute('role')==='button'||node.getAttribute('aria-hidden')==='true'||node.matches('.segment-code-header,.icon-button,.kimi-tooltip')||config.exclude&&node.matches(config.exclude))return '';
+    // Rich blocks (ChatGPT's editable email / document drafts) carry the site's own clean copy of their text.
+    if(config.copyBlock&&node.matches(config.copyBlock.block)){const copy=node.getAttribute(config.copyBlock.attr),title=config.copyBlock.title&&node.querySelector(config.copyBlock.title)?.value?.trim();if(copy&&copy.trim())return '\n\n'+(title?'**'+title+'**\n\n':'')+copy.trim()+'\n\n';}
     // Site code blocks carry a language label and buttons outside <pre>; read the label, fence the code.
     if(tag==='PRE'||node.matches('.md-code-block,.custom-code-block-container')||config.code&&node.matches(config.code.block)){const code=node.querySelector('pre code,code,pre')||node;const language=(code.className||'').match(/language-([\w-]+)/)?.[1]||node.querySelector('.md-code-block-banner span')?.textContent?.trim()||(config.code&&node.querySelector(config.code.language)?.textContent?.trim().toLowerCase().replace(/\s+/g,'-'))||'';const body=visibleText(code,config).replace(/\n$/,'');const fence='`'.repeat(Math.max(3,...(body.match(/`+/g)||[]).map(s=>s.length+1)));return '\n\n'+fence+language+'\n'+body+'\n'+fence+'\n\n';}
     if(tag==='BR')return '\n';
@@ -130,7 +148,10 @@
     if(!busy&&Date.now()-job.changedAt>=2200&&(job.sawBusy||completionMarker(job.config,candidate)))finish(job);
     else if(!busy&&Date.now()-job.changedAt>45000){emit(job,'attention',answerMarkdown(candidate,job.config),'已读到回答，但网页没有可靠的结束信号。请核对全文后确认完成，或重新提取。',{format:'markdown'});retire(job);}
   }
-  function finish(job){if(!followsUser(job.lastElement,users(job.config).at(-1))){job.lastElement=null;job.dirty=true;return;}const text=answerMarkdown(job.lastElement,job.config);if(!text){emit(job,'attention',job.lastText,'网页答案为空，未标记完成。');}else emit(job,'done',text,job.forced?'按你的确认读取了网页最新回答，未核对提问原文。':'',{format:'markdown'});retire(job);}
+  // Content the site fills in after its end signal (ChatGPT writing blocks) holds completion for up to 30 seconds;
+  // after that the normal rules apply to whatever is there.
+  function pendingContent(job){if(!job.config.pending||!job.lastElement||!find(job.config.pending,job.lastElement))return false;job.pendingSince??=Date.now();return Date.now()-job.pendingSince<30000;}
+  function finish(job){if(pendingContent(job)){job.dirty=true;return;}if(!followsUser(job.lastElement,users(job.config).at(-1))){job.lastElement=null;job.dirty=true;return;}const text=answerMarkdown(job.lastElement,job.config);if(!text){emit(job,'attention',job.lastText,'网页答案为空，未标记完成。');}else emit(job,'done',text,job.forced?'按你的确认读取了网页最新回答，未核对提问原文。':'',{format:'markdown'});retire(job);}
   function watch(job){
     for(const other of jobs.values())if(other!==job&&!other.cancelled)retire(other);
     const root=find(job.config.root)||document.body;
@@ -139,6 +160,7 @@
   function limitNotice(config){if(!config.limit)return '';for(const selector of config.limit.selectors)for(const el of document.querySelectorAll(selector)){const text=normalized(el.textContent).replace(/\s+/g,' ');if(visible(el)&&config.limit.text.test(text))return text.slice(0,80);}return '';}
   function assertNoLimit(config){const notice=limitNotice(config);if(notice)throw new Error('网页提示额度已用完（'+notice+'），未发送本轮提问。请等待额度恢复或在原网页处理。');}
   function assertNoAttachments(config){if(config.draftAttachment&&find(config.draftAttachment))throw new Error('该网页有尚未发送的附件，请先处理原网页附件草稿；未发送本轮提问。');}
+  function pressEnter(input){input.focus();const options={key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true,composed:true};for(const type of ['keydown','keypress','keyup'])input.dispatchEvent(new KeyboardEvent(type,options));}
   function clearInput(input){
     input.focus();
     if(input.tagName==='TEXTAREA'){Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(input,'');input.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'deleteContentBackward'}));return;}
@@ -173,7 +195,7 @@
   // Only adapters that declare this follow it, only across element types, and only when the old
   // editor is gone or empty while the new one holds exactly this prompt. A same-type replacement
   // still cancels the send: the page's editor model may no longer hold the text.
-  function handedOff(input,config,prompt){if(!config.editorHandoff)return input;const current=find(config.input);if(current&&current!==input&&current.tagName!==input.tagName&&(!input.isConnected||!visible(input)||!normalized(value(input)))&&sameText(value(current),prompt))return current;return input;}
+  function handedOff(input,config,prompt){if(!config.editorHandoff)return input;const current=composerInput(config);if(current&&current!==input&&current.tagName!==input.tagName&&(!input.isConnected||!visible(input)||!normalized(value(input)))&&sameText(value(current),prompt))return current;return input;}
   // Read-only: what the site shows as its current model / thinking mode. Nothing is clicked; unknown stays empty.
   function readMode(config){const parts=[];for(const spec of config.mode||[]){// Plain specs read one element; pattern specs scan every candidate and (with first) stop at the first match.
     let nodes=[...document.querySelectorAll(spec.select)].filter(visible);if(!spec.all&&!spec.pattern)nodes=nodes.slice(0,1);
@@ -186,7 +208,7 @@
     if(config.blocked&&find(config.blocked))throw new Error('网页要求人机验证，请先在原网页完成验证。');
     if(loginRequired(config))throw new Error('该网页尚未登录。请在原网页登录后再发送；未发送本轮提问。');
     assertNoAttachments(config);assertNoLimit(config);
-    const input=find(config.input);if(!input)throw new Error('未找到可用输入框。请先打开网页完成登录或验证。');
+    const input=composerInput(config);if(!input)throw new Error('未找到可用输入框。请先打开网页完成登录或验证。');
     let leftover=normalized(value(input));const reuse=!!leftover&&!!message.prompt&&sameText(leftover,message.prompt);
     // An earlier round's own question that never went out (failed or skipped member) may still sit in the box.
     // It is ours, not the user's draft, so clear it rather than block every later round on this site.
@@ -203,7 +225,7 @@
     if(jobs.has(message.requestId))return {status:jobs.get(message.requestId).status,duplicate:true};
     const config=globalThis.YuanzhuoAdapters[message.provider];if(!config)throw new Error('不支持该网页。');
     assertNoAttachments(config);
-    let input=find(config.input);if(!input)throw new Error('输入框已消失，请检查登录状态。');
+    let input=composerInput(config);if(!input)throw new Error('输入框已消失，请检查登录状态。');
     const reuse=!!normalized(value(input));
     if(reuse&&!sameText(value(input),message.prompt))throw new Error('发送前发现网页已有草稿，未覆盖或发送。');
     if(cleanUrl()!==message.baseline.url)throw new Error('发送前网页对话已变化，已取消发送。');
@@ -212,18 +234,20 @@
     jobs.set(job.requestId,job);
     try{
       if(!reuse){filling=true;try{await fill(input,message.prompt,config,()=>job.cancelled);}finally{filling=false;}ownDraft=message.prompt;}if(job.cancelled)return {status:'stopped'};assertNoAttachments(config);
-      let button=find(config.send);
-      // Background tabs render slowly (Claude, ChatGPT): the button can appear seconds after the text.
-      for(let i=0;i<40&&!available(button);i++){await sleep(200);if(job.cancelled)return {status:'stopped'};button=find(config.send);}
-      if(!available(button)){retire(job);throw new Error('未找到可用发送按钮，文字保留在网页中，未自动按回车或重试。');}
+      let button=sendButton(input,config);
+      // Background tabs render slowly (Claude, ChatGPT): the button can appear seconds after the text. Sites verified to
+      // send on Enter wait less, then press Enter instead; either way the watcher confirms the question really went out.
+      for(let i=0;i<(config.enterSend?10:40)&&!available(button);i++){await sleep(200);if(job.cancelled)return {status:'stopped'};button=sendButton(input,config);}
+      if(!available(button)&&!config.enterSend){retire(job);throw new Error('未找到可用发送按钮，文字保留在网页中，未自动按回车或重试。');}
       // Nothing may yield between final ownership/integrity checks and the click.
       assertNoAttachments(config);assertNoLimit(config);
       input=handedOff(input,config,message.prompt);
-      if(!input.isConnected||find(config.input)!==input)throw new Error('发送前网页输入框已变化，已取消发送，请检查原网页。');
+      if(!input.isConnected||composerInput(config)!==input)throw new Error('发送前网页输入框已变化，已取消发送，请检查原网页。');
       if(cleanUrl()!==message.baseline.url)throw new Error('发送前网页对话已变化，已取消发送。');
       if(!sameText(value(input),message.prompt))throw new Error('发送前网页输入内容已变化，已取消发送，请检查原网页。');
-      ownDraft=null;job.dispatched=true;watch(job);button.click();job.sending=false;
-      emit(job,'unconfirmed','', '已点击发送，正在核对网页响应；不要重复发送。');
+      const viaEnter=!available(button);
+      ownDraft=null;job.dispatched=true;watch(job);if(viaEnter)pressEnter(input);else button.click();job.sending=false;
+      emit(job,'unconfirmed','',viaEnter?'未找到可用的发送按钮，已按回车发送，正在核对网页响应；不要重复发送。':'已点击发送，正在核对网页响应；不要重复发送。');
       await sleep(450);inspect(job,true);
       return {status:job.status,phase:'attempted'};
     }catch(error){error.notSent=!job.dispatched;retire(job);throw error;}
