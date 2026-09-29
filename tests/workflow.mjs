@@ -37,6 +37,20 @@ try{
   for(const [i,p] of members.entries()){site[p]=opened[i];await opened[i].goto(PROVIDERS[p].url);await opened[i].waitForFunction(()=>!!globalThis.__fixture);}
   checks.push('Sending with unconnected members first offers to connect; nothing is sent meanwhile');
 
+  // Connecting checks every member page (read-only): a quota notice shows on that member before anything is sent.
+  await site.kimi.evaluate(()=>document.body.insertAdjacentHTML('beforeend','<div class="modal-container">Your free quota is used up. Refreshes at 10-19.</div>'));
+  await page.locator('#connect').click();
+  await until(async()=>(await state()).session.bindings.kimi?.health==='quota','kimi quota found by the connect check');
+  await until(async()=>(await page.locator('.member-row',{hasText:'Kimi'}).innerText()).includes('额度已用完'),'quota shown on the member row');
+  assert(await page.locator('.member-row .recovery [data-provider="kimi"][data-op="open"]').isVisible(),'a direct way to the page');
+  for(const p of ['deepseek','doubao'])assert.equal((await state()).session.bindings[p].health,'ok',p+' page is ready');
+  await page.locator('#prompt').fill('体检提示');await page.locator('#send').click();
+  await page.waitForSelector('#guide-fix');assert.match(await page.locator('#dialog-body').innerText(),/Kimi（额度已用完）/);
+  assert.equal((await state()).session.rounds.length,0,'nothing is sent while the hint is open');await page.locator('#dialog-close').click();
+  await site.kimi.evaluate(()=>document.querySelector('.modal-container').remove());await page.locator('#connect').click();
+  await until(async()=>(await state()).session.bindings.kimi?.health==='ok','kimi ready again after re-checking');
+  checks.push('Connecting checks each member page; quota / sign-in / verification show on the row and before sending');
+
   // 2. Workflow in a custom order: each member sees the question plus every earlier answer.
   await page.locator('[data-kind="relay"]').click();await page.waitForSelector('#relay-options:not([hidden])');
   assert.deepEqual(await page.locator('#relay-order .step').allInnerTexts().then(t=>t.map(x=>x.replace(/[↑\s]/g,''))),['1DeepSeek','2Kimi','3豆包']);
@@ -90,6 +104,7 @@ try{
   await sendReady();await page.locator('[data-kind="relay"]').click();await site.deepseek.evaluate(()=>{window.__fixture.hold=true;});
   await page.locator('#prompt').fill('工作流问题 Q4');await page.locator('#send').click();
   await until(async()=>(await latestJobs())[0].status==='sent'||(await latestJobs())[0].status==='streaming','first member answering');
+  await until(async()=>/(等待回答|正在回答) · \d+秒/.test(await page.locator('.member-row',{hasText:'DeepSeek'}).innerText()),'answering member shows elapsed time');
   await page.locator('#send').click();
   await until(async()=>(await latestJobs()).every(j=>['stopped'].includes(j.status)),'every member stopped');
   assert.equal(await sent('kimi'),'下一轮 Q3b','no later member was sent anything');

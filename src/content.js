@@ -201,14 +201,28 @@
     let nodes=[...document.querySelectorAll(spec.select)].filter(visible);if(!spec.all&&!spec.pattern)nodes=nodes.slice(0,1);
     for(const node of nodes){let v=normalized(spec.attr?node.getAttribute(spec.attr)||'':node.innerText||node.textContent||'').replace(/\s+/g,' ');if(spec.pattern){const m=v.match(spec.pattern);if(!m)continue;v=m[1]||m[0];}if(spec.map)v=spec.map[v]||v;if(v&&!parts.includes(v))parts.push(v);if(spec.pattern&&spec.first)break;}}
     return parts.join(' ').slice(0,40);}
+  // Read-only check of a member page right after it is connected: signed in, verification, quota, composer.
+  async function probe(message){
+    const config=globalThis.YuanzhuoAdapters[message.provider];if(!config)throw new Error('不支持该网页。');
+    const blocked=()=>!!(config.blocked&&find(config.blocked));let input=composerInput(config);
+    for(let i=0;i<27&&!input&&!blocked()&&!loginRequired(config);i++){await sleep(300);input=composerInput(config);}
+    // Notices such as Kimi's quota bar render a moment after the composer.
+    await sleep(2000);input=composerInput(config);
+    return {state:blocked()?'verify':loginRequired(config)?'login':limitNotice(config)?'quota':input?'ok':'noinput',url:cleanUrl()};
+  }
   async function prepare(message){
     const config=globalThis.YuanzhuoAdapters[message.provider];if(!config)throw new Error('不支持该网页。');
     if(config.transitional&&find(config.transitional))for(let i=0;i<50&&!find(config.readyWhen);i++)await sleep(300);
+    // A saved chat that was just (re)loaded renders its history a moment after the page itself; the baseline below
+    // must count those earlier questions, or this round's question cannot be told apart from them afterwards.
+    if(config.conversation.test(location.pathname))for(let i=0;i<33&&!users(config).length;i++)await sleep(300);
     for(let i=0;i<50&&(find(config.stop)||(config.busy&&find(config.busy)));i++)await sleep(300);
     if(config.blocked&&find(config.blocked))throw new Error('网页要求人机验证，请先在原网页完成验证。');
     if(loginRequired(config))throw new Error('该网页尚未登录。请在原网页登录后再发送；未发送本轮提问。');
     assertNoAttachments(config);assertNoLimit(config);
-    const input=composerInput(config);if(!input)throw new Error('未找到可用输入框。请先打开网页完成登录或验证。');
+    // A page opened a moment ago may still be building its composer; waiting here is safe, nothing has been sent.
+    let input=composerInput(config);for(let i=0;i<27&&!input;i++){await sleep(300);if(loginRequired(config))throw new Error('该网页尚未登录。请在原网页登录后再发送；未发送本轮提问。');input=composerInput(config);}
+    if(!input)throw new Error('未找到可用输入框。请先打开网页完成登录或验证。');
     let leftover=normalized(value(input));const reuse=!!leftover&&!!message.prompt&&sameText(leftover,message.prompt);
     // An earlier round's own question that never went out (failed or skipped member) may still sit in the box.
     // It is ours, not the user's draft, so clear it rather than block every later round on this site.
@@ -274,7 +288,7 @@
   function stop(message){const job=jobs.get(message.requestId);if(job&&!job.cancelled){const button=message.stopGeneration?find(job.config.stop):null;job.status='stopped';retire(job);if(available(button)){button.click();return {stopped:true,pageStopped:true};}}else if(!job){retire({requestId:message.requestId,status:'stopped',sequence:0});}return {stopped:true,pageStopped:false};}
   chrome.runtime.onMessage.addListener((message,sender,respond)=>{
     if(sender.id!==chrome.runtime.id||!message.type?.startsWith('YZ_'))return false;
-    (async()=>{switch(message.type){case 'YZ_PING':return {ready:true,diagnostics};case 'YZ_PREPARE':return prepare(message);case 'YZ_SEND':return send(message);case 'YZ_REREAD':return reread(message);case 'YZ_STOP':return stop(message);case 'YZ_LATEST_QUESTION':{const config=globalThis.YuanzhuoAdapters[message.provider];if(!config)throw new Error('不支持该网页。');const last=users(config).at(-1);return {question:last?userText(last,config):'',url:cleanUrl()};}case 'YZ_STATUS':{const job=jobs.get(message.requestId);return {known:!!job,status:job?.status,active:!!job&&!job.cancelled,sequence:job?.sequence||0};}default:throw new Error('未知网页操作。');}})().then(result=>respond({ok:true,...result}),error=>respond({ok:false,error:error.message,code:error.code,question:error.question,
+    (async()=>{switch(message.type){case 'YZ_PING':return {ready:true,diagnostics};case 'YZ_PREPARE':return prepare(message);case 'YZ_PROBE':return probe(message);case 'YZ_SEND':return send(message);case 'YZ_REREAD':return reread(message);case 'YZ_STOP':return stop(message);case 'YZ_LATEST_QUESTION':{const config=globalThis.YuanzhuoAdapters[message.provider];if(!config)throw new Error('不支持该网页。');const last=users(config).at(-1);return {question:last?userText(last,config):'',url:cleanUrl()};}case 'YZ_STATUS':{const job=jobs.get(message.requestId);return {known:!!job,status:job?.status,active:!!job&&!job.cancelled,sequence:job?.sequence||0};}default:throw new Error('未知网页操作。');}})().then(result=>respond({ok:true,...result}),error=>respond({ok:false,error:error.message,code:error.code,question:error.question,
       // Send errors raised before the click (all but the post-click path) mean nothing reached the site.
       notSent:message.type==='YZ_SEND'?error.notSent??true:undefined}));return true;
   });
