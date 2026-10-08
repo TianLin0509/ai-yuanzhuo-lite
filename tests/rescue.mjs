@@ -75,7 +75,8 @@ try{
   await until(async()=>!['queued','preparing'].includes((await current('doubao')).status),'doubao attempted',20000);
   if((await current('doubao')).status==='error'){await row('豆包').locator('[data-op="retry"]').click();}
   await until(async()=>(await current('doubao')).status==='done','doubao answered the taken-over seat',30000);
-  const takeover=(await sent('doubao')).at(-1);assert(takeover.startsWith('这是第1轮互相激发。'));assert(takeover.includes('deepseek 完整回答：救援测试 R1')&&takeover.includes('kimi 完整回答：救援测试 R1'),'newcomer gets every source answer');
+  const takeover=(await sent('doubao')).at(-1);// Fixture answers quote the question, so the material already holds it and no newcomer line is added (rescue.test.mjs covers the line).
+  assert(takeover.startsWith('这是第1轮互相激发。')&&takeover.includes('救援测试 R1'),'same material, question present');assert(takeover.includes('deepseek 完整回答：救援测试 R1')&&takeover.includes('kimi 完整回答：救援测试 R1'),'newcomer gets every source answer');
   assert.match(await row('豆包').innerText(),/接替 Kimi/);await sendReady();
   checks.push('换人 during a round: the newcomer takes over the seat with the same material; the replaced job stays as 已跳过 · 已换成');
 

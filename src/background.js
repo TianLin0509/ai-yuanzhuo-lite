@@ -1,4 +1,4 @@
-import {PROVIDERS,DEFAULT_MEMBERS,MAX_SESSIONS,ACTIVE,id,newSession,validMembers,makeRound,composePrompts,busy,providerFor,cleanUrl,sameConversation,acceptEvent,looksLikePlaceholder,validateTemplate,relayNext,relayPrompt,replaceMember} from './core.js';
+import {PROVIDERS,DEFAULT_MEMBERS,MAX_SESSIONS,ACTIVE,id,newSession,validMembers,makeRound,composePrompts,busy,providerFor,cleanUrl,sameConversation,acceptEvent,looksLikePlaceholder,validateTemplate,relayNext,relayPrompt,replaceMember,forNewcomer} from './core.js';
 import {createBackgroundSupport} from './background-support.js';
 import {createWorkspaces} from './workspaces.js';
 
@@ -147,7 +147,7 @@ async function advanceRelay(sessionId,roundId){
   const templates=(await chrome.storage.local.get(TEMPLATES))[TEMPLATES]||{};
   const jobId=await mutate(sessionId,s=>{
     const r=s.rounds.find(x=>x.id===roundId);if(!r||s.rounds.at(-1)?.id!==roundId)return null;const i=relayNext(r);if(i<0)return null;const job=r.jobs[i];
-    try{job.prompt=relayPrompt(r,i,templates);job.status='queued';}catch(error){job.status='error';job.phase='not_sent';job.error=error.message;}
+    try{job.prompt=forNewcomer(s,job.provider,relayPrompt(r,i,templates),s.rounds.length-1);job.status='queued';}catch(error){job.status='error';job.phase='not_sent';job.error=error.message;}
     job.updatedAt=Date.now();return job.status==='queued'?job.id:null;
   });
   if(jobId){await alarm();await dispatch({sessionId,roundId,jobId});await alarm();}
@@ -288,6 +288,8 @@ async function command(message){
       const ref={sessionId:message.sessionId,roundId:message.roundId,jobId:message.jobId},job=await readJob(ref);if(!job)throw new Error('回答不存在。');let forceable=null;
       ref.requestId=job.requestId;
       if(message.operation==='confirm'&&job.status==='waiting')throw new Error('还没轮到这位成员；可以先跳过它。');
+      // A replaced seat stays in the record only; its successor is the one to act on.
+      if(job.replacedBy)throw new Error(`这位成员本轮已换成 ${PROVIDERS[job.replacedBy]?.name||'其他成员'}，请对接替它的成员操作。`);
       if(['retry','reread'].includes(message.operation)){
         const s=await loadSession(ref.sessionId);
         if(s.rounds.at(-1)?.id!==ref.roundId)throw new Error('历史轮次不能重新发送或提取，请在最新一轮继续提问。');
@@ -304,7 +306,7 @@ async function command(message){
         const all=await templates();
         const requestId=await updateJob(ref,(j,s)=>{const r=s.rounds.find(x=>x.id===ref.roundId);if(s.rounds.at(-1)?.id!==ref.roundId)throw new Error('该回答状态已变化，请刷新后重试。');
           // A workflow member still in the queue is sent now, with the answers finished so far.
-          if(j.status==='waiting')j.prompt=relayPrompt(r,r.jobs.indexOf(j),all);
+          if(j.status==='waiting')j.prompt=forNewcomer(s,j.provider,relayPrompt(r,r.jobs.indexOf(j),all),s.rounds.length-1);
           // The earlier answer is kept with the record; a resend never throws a complete answer away.
           if(j.text)j.earlier=[...(j.earlier||[]),{text:j.text,format:j.format||'plain',mode:j.mode||'',url:j.url||'',status:j.status,at:j.updatedAt||Date.now()}];
           j.requestId=id();j.sequence=0;j.status='queued';j.phase='not_sent';j.pageDraft='';j.text='';j.format='plain';j.baseline=null;j.anchor=null;j.url='';j.error='';j.updatedAt=Date.now();return j.requestId;});if(!requestId)throw new Error('该回答状态已变化，请刷新后重试。');await alarm();await dispatch({...ref,requestId,clearDraft:typeof message.clearDraft==='string'?message.clearDraft:''});
