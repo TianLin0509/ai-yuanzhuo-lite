@@ -1,6 +1,6 @@
 {
   "name": "ai-yuanzhuo-lite",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "private": true,
   "type": "module",
   "description": "AI圆桌lite：DeepSeek、Kimi、豆包网页圆桌 Chrome 侧栏",
