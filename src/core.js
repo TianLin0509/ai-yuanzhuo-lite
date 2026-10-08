@@ -137,7 +137,11 @@ export function forNewcomer(session,provider,prompt,before=session.rounds.length
   const original=session.rounds[0]?.prompt||'';
   if(!prompt||!original.trim()||before<1||prompt.includes(original))return prompt;
   const reached=session.rounds.slice(0,before).some(r=>r.jobs.some(j=>j.provider===provider&&(j.status==='done'||!!j.text||!!j.phase&&j.phase!=='not_sent')));
-  return reached?prompt:`（你是中途加入这场讨论的成员。原始问题：\n${original}）\n\n${prompt}`;
+  if(reached)return prompt;
+  // The added line counts toward the limit like everything else: too long is refused, never truncated.
+  const full=`（你是中途加入这场讨论的成员。原始问题：\n${original}）\n\n${prompt}`;
+  if(full.length>MAX_PROMPT)throw new Error(`完整上下文超过 ${MAX_PROMPT.toLocaleString()} 字符，尚未发送。请跳过这位成员或另开圆桌；不会自动截断。`);
+  return full;
 }
 // The workflow order is the user's chosen order when it names exactly this roundtable's members.
 export function relayOrder(session,order){const list=Array.isArray(order)?order:String(order||'').split(',').filter(Boolean);return list.length===session.members.length&&session.members.every(m=>list.includes(m))&&new Set(list).size===list.length?list:[...session.members];}

@@ -75,9 +75,22 @@ test('中途加入的成员在材料缺原问题时补一句原问题；老成�
   const inspire=Object.fromEntries(composePrompts('inspire','',s).map(p=>[p.provider,p.prompt]));assert(inspire.qwen.startsWith(prefix+'这是第1轮互相激发'));assert(!inspire.doubao.startsWith('（你是中途加入'));
   // Takeover mid-round: the replacement gets the line; a member that only failed before (nothing reached its site) counts as new.
   const r2=makeRound('iterate','补充一个例子',s);s.rounds.push(r2);jobFor(r2,'doubao').status='error';
-  const {job}=replaceMember(s,'doubao','grok');assert.equal(job.prompt,prefix.replace('原始问题：彩虹','原始问题：彩虹')+'补充一个例子');
+  const {job}=replaceMember(s,'doubao','grok');assert.equal(job.prompt,prefix+'补充一个例子');
   assert.equal(forNewcomer(s,'deepseek','x'),'x');assert.equal(forNewcomer(s,'grok','含有 原始问题：彩虹为什么是弯的 的材料'),'含有 原始问题：彩虹为什么是弯的 的材料','material already holds the question');
   // Workflow: a newcomer's turn is composed with the line too (as background.advanceRelay does).
   const w=makeRound('relay','接力：再补一条',{...s,rounds:s.rounds.slice(0,1)});w.jobs[0].status='done';w.jobs[0].text='DS';
   assert(forNewcomer(s,'grok',relayPrompt(w,1),1).startsWith('（你是中途加入这场讨论的成员。'));
+});
+test('补原问题后超过 120000 字符时明确拒绝，不截断（工作流新成员与换人接手）',()=>{
+  const question='长问题'+'甲'.repeat(30000),s=newSession(['deepseek','kimi']),r=makeRound('iterate',question,s);r.jobs.forEach(j=>{j.status='done';j.phase='attempted';j.text='答';});s.rounds.push(r);
+  const material='材料'+'乙'.repeat(100000);
+  assert.equal(forNewcomer(s,'deepseek',material),material,'old member unchanged');
+  assert.throws(()=>forNewcomer(s,'qwen',material),/超过 120,000 字符，尚未发送/);
+  // Workflow turn for a newcomer, as background.advanceRelay composes it.
+  s.members=['deepseek','qwen'];const w=makeRound('relay','接力',s,{order:['deepseek','qwen']});s.rounds.push(w);w.jobs[0].status='done';w.jobs[0].text='丙'.repeat(95000);
+  assert.throws(()=>forNewcomer(s,'qwen',relayPrompt(w,1),s.rounds.length-1),/尚未发送/);
+  // Takeover of an iterate seat whose question alone fits.
+  const t=newSession(['deepseek','kimi']),r1=makeRound('iterate',question,t);r1.jobs.forEach(j=>{j.status='done';j.phase='attempted';j.text='答';});t.rounds.push(r1);
+  const r2=makeRound('iterate',material,t);t.rounds.push(r2);jobFor(r2,'kimi').status='error';
+  const taken=replaceMember(t,'kimi','grok');assert.equal(taken.job,null,'nothing queued');const g=jobFor(r2,'grok');assert.equal(g.status,'error');assert.match(g.error,/尚未发送/);
 });
