@@ -124,10 +124,20 @@ export function composePrompts(kind,text,session,{captain,depth='简要结论',s
     if(kind==='summary')prompt=fill(templates.summary||DEFAULT_TEMPLATES.summary,{总结要求:SUMMARY_DEPTH[depth]||SUMMARY_DEPTH['简要结论'],问题:latest.prompt,各家回答:answers.map(a=>`--- ${PROVIDERS[a.provider].name} ---\n${a.text}`).join('\n\n')})+supplement;
     // Workflow: only the first member gets the question now; the others are composed when their turn comes.
     if(kind==='relay'&&provider!==targets[0])prompt='';
+    if(prompt)prompt=forNewcomer(session,provider,prompt);
     if(prompt.length>MAX_PROMPT)throw new Error(`完整上下文超过 ${MAX_PROMPT.toLocaleString()} 字符，尚未发送。请导出后缩短材料或另开圆桌；不会自动截断。`);
     return {provider,prompt};
   });
   return prompts;
+}
+// A member that joins after the first round has none of the earlier conversation on its site. Unless its material
+// already contains the roundtable's original question, one line in front says what is being discussed. Same wording
+// as AI圆桌 Android 0.19.0 (RoundMaterials.forNewcomer). `before` is the number of earlier rounds to look at.
+export function forNewcomer(session,provider,prompt,before=session.rounds.length){
+  const original=session.rounds[0]?.prompt||'';
+  if(!prompt||!original.trim()||before<1||prompt.includes(original))return prompt;
+  const reached=session.rounds.slice(0,before).some(r=>r.jobs.some(j=>j.provider===provider&&(j.status==='done'||!!j.text||!!j.phase&&j.phase!=='not_sent')));
+  return reached?prompt:`（你是中途加入这场讨论的成员。原始问题：\n${original}）\n\n${prompt}`;
 }
 // The workflow order is the user's chosen order when it names exactly this roundtable's members.
 export function relayOrder(session,order){const list=Array.isArray(order)?order:String(order||'').split(',').filter(Boolean);return list.length===session.members.length&&session.members.every(m=>list.includes(m))&&new Set(list).size===list.length?list:[...session.members];}
@@ -177,6 +187,7 @@ export function replaceMember(session,provider,replacement,templates={}){
     if(round.kind==='relay'){if(previous.status==='waiting')job.status='waiting';else job.prompt=relayPrompt(round,index+1,templates);}
     else if(PEER_KINDS.has(round.kind))job.prompt=peerPrompt(session,round,replacement,templates)??previous.prompt;
     else job.prompt=previous.prompt;
+    job.prompt=forNewcomer(session,replacement,job.prompt,session.rounds.length-1);
   }catch(error){job.status='error';job.error=error.message;}
   return {job:job.status==='queued'?job:null,previous:ACTIVE.has(previous.status)?previous:null};
 }

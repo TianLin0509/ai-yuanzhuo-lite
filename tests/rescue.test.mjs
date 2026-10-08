@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {newSession,makeRound,composePrompts,presetView,validateTemplate,replaceMember,canTakeOver,jobFor,relayNext,busy,toMarkdown,KIND_NAMES} from '../src/core.js';
+import {newSession,makeRound,composePrompts,presetView,validateTemplate,replaceMember,canTakeOver,jobFor,relayNext,relayPrompt,busy,toMarkdown,KIND_NAMES,forNewcomer} from '../src/core.js';
 
 // 2026-10-08: 互相激发 between 观点讨论 and 队长总结, and 换人 as an escape hatch at any time.
 const answered=(members=['deepseek','kimi','doubao'])=>{const s=newSession(members),r=makeRound('iterate','原问题',s);r.jobs.forEach(j=>{j.status='done';j.text=j.provider.toUpperCase()+'_ANSWER';});s.rounds.push(r);return s;};
@@ -40,7 +40,7 @@ test('换人：进行中、排队、出错的位置由新成员接手同一材�
   assert.equal(job.provider,'qwen');assert.equal(job.status,'queued');assert.equal(r.jobs.indexOf(job),r.jobs.indexOf(kimi)+1);
   // The newcomer has no answer of its own in the source round, so it receives all three.
   for(const p of ['DEEPSEEK','KIMI','DOUBAO'])assert(job.prompt.includes(p+'_ANSWER'));
-  assert(job.prompt.startsWith('这是第1轮互相激发。'));assert(job.prompt.endsWith('用户补充要求：\n补充'));
+  assert(job.prompt.startsWith('（你是中途加入这场讨论的成员。原始问题：\n原问题）\n\n这是第1轮互相激发。'),'newcomer line first');assert(job.prompt.endsWith('用户补充要求：\n补充'));
   assert.equal(jobFor(r,'qwen'),job);assert(busy(s));
   // Swap back: the latest job of a provider is the current one.
   const back=replaceMember(s,'qwen','kimi');assert.equal(jobFor(r,'kimi'),back.job);assert.equal(job.replacedBy,'kimi');
@@ -55,7 +55,7 @@ test('换人：已完成、已跳过或整轮停止时只从下一轮起换，�
 test('换人：工作流在同一位置接力；排队中的位置继续排队',()=>{
   const s=answered(),r=makeRound('relay','接力问题',s,{order:['deepseek','kimi','doubao']});s.rounds.push(r);
   Object.assign(r.jobs[0],{status:'done',text:'DS_RELAY'});Object.assign(r.jobs[1],{status:'error',prompt:'旧材料'});
-  const {job}=replaceMember(s,'kimi','qwen');assert.equal(job.status,'queued');assert(job.prompt.includes('DS_RELAY'));assert(job.prompt.startsWith('接力问题'));
+  const {job}=replaceMember(s,'kimi','qwen');assert.equal(job.status,'queued');assert(job.prompt.includes('DS_RELAY'));assert(job.prompt.startsWith('（你是中途加入这场讨论的成员。原始问题：\n原问题）\n\n接力问题'));
   const t=answered(),q=makeRound('relay','排队',t);t.rounds.push(q);q.jobs[0].status='sent';
   const waiting=replaceMember(t,'doubao','grok');assert.equal(waiting.job,null);assert.equal(jobFor(q,'grok').status,'waiting');
   q.jobs[0].status='done';q.jobs[0].text='A';q.jobs[1].status='done';q.jobs[1].text='B';assert.equal(q.jobs[relayNext(q)].provider,'grok','the newcomer takes its turn');
@@ -64,4 +64,20 @@ test('导出保留被换下的成员与重新发送前的回答',()=>{
   const s=answered(),r=s.rounds[0];jobFor(r,'deepseek').earlier=[{text:'第一版回答',at:1}];
   const r2=makeRound('iterate','Q2',s);s.rounds.push(r2);jobFor(r2,'kimi').status='error';replaceMember(s,'kimi','qwen');
   const md=toMarkdown(s);assert(md.includes('之前的回答 1\n\n第一版回答'));assert(md.includes('Kimi · 已跳过（已换成 千问）'));
+});
+test('中途加入的成员在材料缺原问题时补一句原问题；老成员与第一轮不补',()=>{
+  const s=newSession(['deepseek','kimi','doubao']),r=makeRound('iterate','原始问题：彩虹为什么是弯的',s);r.jobs.forEach(j=>{j.status='done';j.phase='attempted';j.text=j.provider+' 答';});s.rounds.push(r);
+  const prefix='（你是中途加入这场讨论的成员。原始问题：\n原始问题：彩虹为什么是弯的）\n\n';
+  assert.equal(composePrompts('iterate','原始问题：彩虹为什么是弯的',newSession(['deepseek','kimi']))[0].prompt,'原始问题：彩虹为什么是弯的','first round untouched');
+  s.members=['deepseek','qwen','doubao'];
+  const next=Object.fromEntries(composePrompts('iterate','再说简单点',s).map(p=>[p.provider,p.prompt]));
+  assert.equal(next.deepseek,'再说简单点');assert.equal(next.qwen,prefix+'再说简单点','next-round newcomer');
+  const inspire=Object.fromEntries(composePrompts('inspire','',s).map(p=>[p.provider,p.prompt]));assert(inspire.qwen.startsWith(prefix+'这是第1轮互相激发'));assert(!inspire.doubao.startsWith('（你是中途加入'));
+  // Takeover mid-round: the replacement gets the line; a member that only failed before (nothing reached its site) counts as new.
+  const r2=makeRound('iterate','补充一个例子',s);s.rounds.push(r2);jobFor(r2,'doubao').status='error';
+  const {job}=replaceMember(s,'doubao','grok');assert.equal(job.prompt,prefix.replace('原始问题：彩虹','原始问题：彩虹')+'补充一个例子');
+  assert.equal(forNewcomer(s,'deepseek','x'),'x');assert.equal(forNewcomer(s,'grok','含有 原始问题：彩虹为什么是弯的 的材料'),'含有 原始问题：彩虹为什么是弯的 的材料','material already holds the question');
+  // Workflow: a newcomer's turn is composed with the line too (as background.advanceRelay does).
+  const w=makeRound('relay','接力：再补一条',{...s,rounds:s.rounds.slice(0,1)});w.jobs[0].status='done';w.jobs[0].text='DS';
+  assert(forNewcomer(s,'grok',relayPrompt(w,1),1).startsWith('（你是中途加入这场讨论的成员。'));
 });
