@@ -1,4 +1,4 @@
-import {PROVIDERS,DEFAULT_MEMBERS,MAX_SESSIONS,ACTIVE,id,newSession,validMembers,makeRound,composePrompts,busy,providerFor,cleanUrl,sameConversation,acceptEvent,looksLikePlaceholder,validateTemplate,relayNext,relayPrompt} from './core.js';
+import {PROVIDERS,DEFAULT_MEMBERS,MAX_SESSIONS,ACTIVE,id,newSession,validMembers,makeRound,composePrompts,busy,providerFor,cleanUrl,sameConversation,acceptEvent,looksLikePlaceholder,validateTemplate,relayNext,relayPrompt,replaceMember} from './core.js';
 import {createBackgroundSupport} from './background-support.js';
 import {createWorkspaces} from './workspaces.js';
 
@@ -164,11 +164,15 @@ async function recover(){
     const last=session.rounds.at(-1);if(relayNext(last)>=0&&await workspaces.owner(session.id))advanceLater(session.id,last.id);
   }await alarm();
 }
+// Detaches the roundtable from a member's earlier request (its page reader and debugger hold) without touching the
+// record. stopGeneration also asks the site to stop answering, which a resend needs and a re-read must not do.
+async function detach(job,{stopGeneration}){if(!job.tabId)return;try{await pageMessage(job.tabId,{type:'YZ_STOP',requestId:job.requestId,stopGeneration});}catch(error){console.info('[AI圆桌lite] 旧请求停止未确认',error.message);}try{await support.release(job.tabId,job.requestId);}catch(error){supportWarning=error.message;}}
 async function stopJob(ref,{skip=false}={}){
   const job=await readJob(ref);if(!job)return;
   ref={...ref,requestId:job.requestId};
   await updateJob(ref,j=>{j.status=skip?'skipped':'stopped';j.error='';j.updatedAt=Date.now();});
-  if(job.tabId){try{const result=await pageMessage(job.tabId,{type:'YZ_STOP',requestId:job.requestId,stopGeneration:true});if(!result.pageStopped&&!skip)await updateJob(ref,j=>{j.error='已停止圆桌读取。原网页若仍在生成，可在原网页手动停止。';});}catch(error){await updateJob(ref,j=>{j.error='已停止圆桌读取；原网页未确认停止：'+error.message;});}}
+  // Only a running member has anything to stop on its page; skipping a finished answer just leaves it out of the round.
+  if(job.tabId&&ACTIVE.has(job.status)){try{const result=await pageMessage(job.tabId,{type:'YZ_STOP',requestId:job.requestId,stopGeneration:true});if(!result.pageStopped&&!skip)await updateJob(ref,j=>{j.error='已停止圆桌读取。原网页若仍在生成，可在原网页手动停止。';});}catch(error){await updateJob(ref,j=>{j.error='已停止圆桌读取；原网页未确认停止：'+error.message;});}}
   await releaseSupport(ref);
 }
 const urlOnly=bindings=>Object.fromEntries(Object.entries(bindings||{}).map(([p,b])=>[p,{url:b.url}]));
@@ -260,6 +264,13 @@ async function command(message){
     case 'new':{const session=await createSession(message.members||[...preferredMembers]);const opened=await workspaces.main(session.id);for(const provider of session.members)await connection(session.id,provider);return {...await state(),opened};}
     case 'select':{await loadSession(message.sessionId);const reopening=!await workspaces.owner(message.sessionId);const opened=await workspaces.main(message.sessionId);const s=await loadSession(message.sessionId);for(const p of s.members)await connection(s.id,p);if(reopening)verifyLater(s.id);return {...await state(),opened};}
     case 'members':{await mutate(message.sessionId,s=>{if(busy(s))throw new Error('请先等待或停止本轮，再更改成员。');newSession(message.members);s.members=message.members;});preferredMembers=[...message.members];await chrome.storage.local.set({[MEMBERS]:preferredMembers});return state();}
+    case 'replace':{
+      const all=await templates(),result=await mutate(message.sessionId,s=>{const r=replaceMember(s,message.provider,message.replacement,all);return {roundId:s.rounds.at(-1)?.id,kind:s.rounds.at(-1)?.kind,job:r.job&&r.job.id,previous:r.previous,members:[...s.members]};});
+      preferredMembers=result.members;await chrome.storage.local.set({[MEMBERS]:preferredMembers});
+      if(result.previous)await detach(result.previous,{stopGeneration:true});
+      await alarm();if(result.job)await dispatch({sessionId:message.sessionId,roundId:result.roundId,jobId:result.job});
+      if(result.kind==='relay')advanceLater(message.sessionId,result.roundId);await alarm();return state();
+    }
     case 'connect':{const s=await loadSession(message.sessionId);for(const provider of s.members){const binding=s.bindings[provider],windowId=await workspaces.owner(s.id);if(binding?.tabId&&windowId){let tab;try{tab=await chrome.tabs.get(binding.tabId);}catch(e){if(!/No tab|Invalid tab/i.test(e.message))throw e;}if(tab&&(tab.windowId!==windowId||providerFor(tab.url||tab.pendingUrl)!==provider)){if(busy(s))throw new Error('请先停止本轮，再重新连接已移动的成员。');await mutate(s.id,copy=>{copy.bindings[provider]={url:binding.url};});}}await connection(s.id,provider);}checkLater(s.id);return state();}
     case 'open-answer':{const s=await loadSession(message.sessionId),r=s.rounds.find(r=>r.id===message.roundId),j=r?.jobs.find(j=>j.id===message.jobId);if(!j?.url||providerFor(j.url)!==j.provider)throw new Error('这份记录尚无可核对的原网页地址。');const windowId=await workspaces.owner(s.id),tabs=await chrome.tabs.query(windowId?{windowId}:{});const tab=tabs.find(t=>cleanUrl(t.url)===cleanUrl(j.url));if(tab)await chrome.tabs.update(tab.id,{active:true});else await chrome.tabs.create({...(windowId?{windowId}:{}),url:j.url,active:true});return state();}
     case 'open':{if(!PROVIDERS[message.provider])throw new Error('未知成员。');const session=await loadSession(message.sessionId);const bound=session.bindings[message.provider];const tab=await connection(session.id,message.provider,{focus:true});if(bound?.url&&cleanUrl(tab.url)!==cleanUrl(bound.url))await chrome.tabs.update(tab.id,{url:bound.url});return state();}
@@ -276,7 +287,7 @@ async function command(message){
     case 'job':{
       const ref={sessionId:message.sessionId,roundId:message.roundId,jobId:message.jobId},job=await readJob(ref);if(!job)throw new Error('回答不存在。');let forceable=null;
       ref.requestId=job.requestId;
-      if(['retry','reread','confirm'].includes(message.operation)&&job.status==='waiting')throw new Error('还没轮到这位成员；可以先跳过它。');
+      if(message.operation==='confirm'&&job.status==='waiting')throw new Error('还没轮到这位成员；可以先跳过它。');
       if(['retry','reread'].includes(message.operation)){
         const s=await loadSession(ref.sessionId);
         if(s.rounds.at(-1)?.id!==ref.roundId)throw new Error('历史轮次不能重新发送或提取，请在最新一轮继续提问。');
@@ -285,15 +296,28 @@ async function command(message){
       if(message.operation==='stop'||message.operation==='skip')await stopJob(ref,{skip:message.operation==='skip'});
       else if(message.operation==='confirm'){if(!job.text||job.status!=='attention')throw new Error('只有已提取但待确认的回答可以手动确认。');await updateJob(ref,j=>{j.status='done';j.error='用户核对后确认完成。';});}
       else if(message.operation==='retry'){
-        if(ACTIVE.has(job.status))throw new Error('该成员仍在进行，请先停止。');
-        if(job.phase==='attempted'&&!message.confirmDuplicate)throw new Error('此前发送结果不确定，重新发送可能重复。请先重新提取，或明确确认重发。');
-        const requestId=await updateJob(ref,(j,s)=>{if(s.rounds.at(-1)?.id!==ref.roundId||ACTIVE.has(j.status))throw new Error('该回答状态已变化，请刷新后重试。');if(['done','skipped'].includes(j.status))throw new Error('该轮已经结束，请在新一轮继续提问。');j.requestId=id();j.sequence=0;j.status='queued';j.phase='not_sent';j.pageDraft='';j.text='';j.format='plain';j.baseline=null;j.anchor=null;j.url='';j.error='';j.updatedAt=Date.now();return j.requestId;});if(!requestId)throw new Error('该回答状态已变化，请刷新后重试。');await alarm();await dispatch({...ref,requestId,clearDraft:typeof message.clearDraft==='string'?message.clearDraft:''});
+        // Resend is always offered. Anything that may already be on the site (answering, finished, uncertain) needs the
+        // user's explicit confirmation, because the site will then show the question twice.
+        const reached=ACTIVE.has(job.status)||job.status==='done'||!['not_sent','prepared',undefined].includes(job.phase);
+        if(reached&&!message.confirmDuplicate)throw new Error('这位成员可能已经收到过本轮内容，重新发送会在网页里重复提问。请先重新提取，或明确确认重发。');
+        if(ACTIVE.has(job.status))await detach(job,{stopGeneration:true});
+        const all=await templates();
+        const requestId=await updateJob(ref,(j,s)=>{const r=s.rounds.find(x=>x.id===ref.roundId);if(s.rounds.at(-1)?.id!==ref.roundId)throw new Error('该回答状态已变化，请刷新后重试。');
+          // A workflow member still in the queue is sent now, with the answers finished so far.
+          if(j.status==='waiting')j.prompt=relayPrompt(r,r.jobs.indexOf(j),all);
+          // The earlier answer is kept with the record; a resend never throws a complete answer away.
+          if(j.text)j.earlier=[...(j.earlier||[]),{text:j.text,format:j.format||'plain',mode:j.mode||'',url:j.url||'',status:j.status,at:j.updatedAt||Date.now()}];
+          j.requestId=id();j.sequence=0;j.status='queued';j.phase='not_sent';j.pageDraft='';j.text='';j.format='plain';j.baseline=null;j.anchor=null;j.url='';j.error='';j.updatedAt=Date.now();return j.requestId;});if(!requestId)throw new Error('该回答状态已变化，请刷新后重试。');await alarm();await dispatch({...ref,requestId,clearDraft:typeof message.clearDraft==='string'?message.clearDraft:''});
       }else if(message.operation==='reread'){
-        if(ACTIVE.has(job.status))throw new Error('请先停止该成员的自动读取。');
         // Without force the page must prove the latest question is this round's; force follows the user's confirmation.
         const force=message.force===true;
         const tab=await restoreIfDiscarded(await connection(ref.sessionId,job.provider,{verifyConversation:!force,rereadJob:job}));await waitForTab(tab.id);
-        const requestId=id();const claimed=await updateJob(ref,(j,s)=>{if(s.rounds.at(-1)?.id!==ref.roundId||ACTIVE.has(j.status))throw new Error('该回答状态已变化，请刷新后重试。');j.requestId=requestId;j.sequence=0;j.status='sent';j.tabId=tab.id;j.error='';j.startedAt=Date.now();j.updatedAt=Date.now();return true;});if(!claimed)throw new Error('该回答状态已变化，请刷新后重试。');
+        // A queued workflow member has sent nothing, so there is no question to match: show the page's latest one and
+        // read it only after the user confirms (for instance after asking it by hand on the site).
+        if(job.status==='waiting'&&!force){await inject(tab.id,job.provider);const page=await pageMessage(tab.id,{type:'YZ_LATEST_QUESTION',provider:job.provider});return {...await state(),forceable:{jobId:job.id,provider:job.provider,question:String(page.question||'').slice(0,120)}};}
+        // Re-reading a member that is still running restarts the reading only; the site keeps answering.
+        const requestId=id();const claimed=await updateJob(ref,(j,s)=>{if(s.rounds.at(-1)?.id!==ref.roundId||j.requestId!==job.requestId)throw new Error('该回答状态已变化，请刷新后重试。');j.requestId=requestId;j.sequence=0;j.status='sent';j.tabId=tab.id;j.error='';j.startedAt=Date.now();j.updatedAt=Date.now();return true;});if(!claimed)throw new Error('该回答状态已变化，请刷新后重试。');
+        if(ACTIVE.has(job.status))await detach(job,{stopGeneration:false});
         try{await support.acquire(tab.id,requestId,job.provider);if(!await supportedJob({...ref,requestId})){await support.release(tab.id,requestId);return state();}await inject(tab.id,job.provider);if(!await supportedJob({...ref,requestId})){await support.release(tab.id,requestId);return state();}await pageMessage(tab.id,{type:'YZ_REREAD',provider:job.provider,requestId,baseline:job.phase==='attempted'?job.baseline:null,url:job.url,prompt:job.prompt,anchor:force?null:job.anchor,force});}catch(error){await updateJob({...ref,requestId},j=>{if(ACTIVE.has(j.status)){j.status='attention';j.error=error.message;}});await releaseSupport({...ref,requestId});if(error.code==='NOT_OWNED'&&!force)forceable={jobId:job.id,provider:job.provider,question:error.question||''};}
       }else throw new Error('未知回答操作。');await alarm();
       if(['skip','confirm'].includes(message.operation)&&(await loadSession(ref.sessionId)).rounds.find(r=>r.id===ref.roundId)?.kind==='relay')advanceLater(ref.sessionId,ref.roundId);

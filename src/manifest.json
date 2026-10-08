@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "AI圆桌lite",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "minimum_chrome_version": "120",
   "description": "一个问题，多种视角。DeepSeek、Kimi、豆包、千问、元宝、ChatGPT、Claude、Gemini、Grok 网页圆桌。",
   "permissions": ["storage", "unlimitedStorage", "scripting", "sidePanel", "tabs", "alarms", "debugger"],
