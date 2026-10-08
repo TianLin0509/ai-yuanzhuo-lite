@@ -1,13 +1,14 @@
 {
   "manifest_version": 3,
   "name": "AI圆桌lite",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "minimum_chrome_version": "120",
   "description": "一个问题，多种视角。DeepSeek、Kimi、豆包、千问、元宝、ChatGPT、Claude、Gemini、Grok 网页圆桌。",
   "permissions": ["storage", "unlimitedStorage", "scripting", "sidePanel", "tabs", "alarms", "debugger"],
   "host_permissions": ["https://chat.deepseek.com/*", "https://www.kimi.com/*", "https://kimi.com/*", "https://kimi.moonshot.cn/*", "https://www.doubao.com/*", "https://www.qianwen.com/*", "https://yuanbao.tencent.com/*", "https://chatgpt.com/*", "https://claude.ai/*", "https://gemini.google.com/*", "https://grok.com/*"],
   "background": {"service_worker": "background.js", "type": "module"},
   "side_panel": {"default_path": "sidepanel.html"},
-  "action": {"default_title": "打开 AI圆桌lite"},
+  "icons": {"16": "icon-16.png", "32": "icon-32.png", "48": "icon-48.png", "128": "icon-128.png"},
+  "action": {"default_title": "打开 AI圆桌lite", "default_icon": {"16": "icon-16.png", "32": "icon-32.png", "48": "icon-48.png", "128": "icon-128.png"}},
   "content_security_policy": {"extension_pages": "script-src 'self'; object-src 'none'"}
 }
