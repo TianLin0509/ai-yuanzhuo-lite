@@ -9,11 +9,14 @@ export const forgetFolder=()=>tx('readwrite',s=>s.delete(KEY));
 const saveFolder=handle=>tx('readwrite',s=>s.put(handle,KEY));
 
 // The chosen folder must hold this very extension: same name, same running version.
-export async function checkFolder(handle,running=chrome.runtime.getManifest()){
+export async function checkFolder(handle,running=chrome.runtime.getManifest(),ownBuild){
+  if(ownBuild===undefined&&globalThis.chrome?.runtime?.getURL){try{ownBuild=await (await fetch(chrome.runtime.getURL('build.json'),{cache:'no-store'})).text();}catch{ownBuild=undefined;}}
   let text;try{text=await (await (await handle.getFileHandle('manifest.json')).getFile()).text();}catch{throw new Error(`「${handle.name}」里没有 manifest.json，不是 AI圆桌lite 的文件夹。请选当初「加载已解压的扩展程序」时选的那个文件夹。`);}
   let m;try{m=JSON.parse(text);}catch{throw new Error(`「${handle.name}」里的 manifest.json 读不懂，请重新选择。`);}
   if(m.name!==running.name)throw new Error(`「${handle.name}」里是「${m.name}」，不是 AI圆桌lite。`);
   if(m.version!==running.version)throw new Error(`「${handle.name}」里的版本是 v${m.version}，和正在运行的 v${running.version} 不同，可能不是当前加载的那个文件夹。`);
+  // Another copy of the same version (an old download, a build folder) has a different build stamp.
+  if(ownBuild!==undefined){let theirs=null;try{theirs=await (await (await handle.getFileHandle('build.json')).getFile()).text();}catch{}if(theirs!==ownBuild)throw new Error(`「${handle.name}」是 AI圆桌lite 的另一份副本，不是 Chrome 正在加载的那个文件夹。请选当初「加载已解压的扩展程序」时选的那个。`);}
   return true;
 }
 
@@ -43,12 +46,14 @@ export async function writeRelease(handle,files,onProgress=()=>{}){
   const one=async file=>{
     const {dir,name}=await locate(file.path);
     let before=null;try{before=new Uint8Array(await (await (await dir.getFileHandle(name)).getFile()).arrayBuffer());}catch(error){if(error.name!=='NotFoundError')throw error;}
-    if(!same(before,file.data)){undo.push({dir,name,before});try{await put(dir,name,file.data);}catch(error){throw new Error(`写入 ${file.path} 失败：${error.message}`);}written++;}
+    // A failed write leaves the original untouched (the swap file is discarded), so only successful writes need undoing.
+    if(!same(before,file.data)){try{await put(dir,name,file.data);}catch(error){throw new Error(`写入 ${file.path} 失败：${error.message}`);}undo.push({dir,name,before});written++;}
     onProgress(++done,ordered.length,file.path);
   };
   try{
     const last=ordered.filter(f=>f.path==='manifest.json'||f.path==='build.json'),rest=ordered.filter(f=>!last.includes(f));
-    for(let i=0;i<rest.length;i+=4)await Promise.all(rest.slice(i,i+4).map(one));
+    // allSettled: a failure is acted on only after every write of its group has finished, so none lands after the rollback.
+    for(let i=0;i<rest.length;i+=4){const results=await Promise.allSettled(rest.slice(i,i+4).map(one));const failed=results.find(r=>r.status==='rejected');if(failed)throw failed.reason;}
     for(const file of last)await one(file);
     return {written,total:ordered.length};
   }catch(error){

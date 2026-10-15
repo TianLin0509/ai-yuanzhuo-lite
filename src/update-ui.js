@@ -51,7 +51,7 @@ const step=(ratio,text)=>{progress={ratio,text};render();};
 async function install(repick){
   if(running)return;running=true;failure='';
   try{
-    if(hooks.busy())throw new Error('还有进行中的圆桌，等本轮结束或停止后再更新。');
+    await hooks.request('canUpdate');
     // The folder first: it needs this click, and nothing is downloaded for a folder that cannot be written.
     step(0.02,'正在确认扩展文件夹…');
     const folder=await installFolder({interactive:true,repick});
@@ -63,10 +63,10 @@ async function install(repick){
     const {bytes,source}=await downloadBundle(m,{first:found.source,onProgress:p=>step(0.05+0.65*p.received/p.total,`正在从 ${p.source} 下载 ${kb(p.received)} / ${kb(p.total)}`)});
     step(0.72,`正在逐个核对 ${m.files.length} 个文件…`);
     const files=await openBundle(bytes,m);
-    await writeRelease(folder,files,(done,total)=>step(0.75+0.2*done/total,`正在写入 ${done} / ${total}（内容没变的文件会跳过）`));
+    await hooks.request('canUpdate');
+    await writeRelease(folder,files,(done,total)=>step(0.75+0.2*done/total,`正在写入 ${done} / ${total}，请勿关闭此页（内容没变的文件会跳过）`));
     step(1,`v${m.version} 已写入（来自 ${source}），正在重新加载…`);
-    const r=await hooks.act('update');
-    if(!r?.reloading)throw new Error('新版文件已写入，但没能自动重新加载。请到 Chrome「扩展程序」页面点 AI圆桌lite 的刷新按钮。');
+    try{await hooks.request('update');}catch(error){progress=null;failure=`v${m.version} 已写入扩展文件夹，但还没生效：${error.message} 生效方法：等圆桌结束后点顶部的「更新到新版本」，或到 Chrome「扩展程序」页面点 AI圆桌lite 的刷新按钮。`;return;}
   }catch(error){progress=null;failure=error.cancelled?error.message:'没有更新：'+error.message;}
   finally{running=false;render();}
 }

@@ -82,3 +82,41 @@ test('the extension may fetch from every update source; the release key in the s
   const {UPDATE_KEY}=await import('../src/update-core.js');
   await crypto.webcrypto.subtle.importKey('spki',Buffer.from(UPDATE_KEY,'base64'),{name:'ECDSA',namedCurve:'P-256'},false,['verify']);
 });
+
+// A folder handle like Chrome's File System Access one, with per-file write delays and failures.
+function fakeFolder(initial,{slow={},fail={}}={}){
+  const files=new Map(Object.entries(initial).map(([k,v])=>[k,new TextEncoder().encode(v)]));
+  const notFound=()=>Object.assign(new Error('not found'),{name:'NotFoundError'});
+  const dir=prefix=>({name:'install',
+    async getDirectoryHandle(name){return dir(prefix+name+'/');},
+    async getFileHandle(name,{create}={}){const key=prefix+name;if(!files.has(key)&&!create)throw notFound();
+      return {async getFile(){if(!files.has(key))throw notFound();const data=files.get(key);return {arrayBuffer:async()=>data.slice().buffer,text:async()=>new TextDecoder().decode(data)};},
+        async createWritable(){let buf;return {async write(d){buf=d;},async close(){await new Promise(r=>setTimeout(r,slow[key]||1));if(fail[key])throw new Error('locked');files.set(key,new Uint8Array(buf));},async abort(){}};}};},
+    async removeEntry(name){files.delete(prefix+name);}});
+  return {handle:dir(''),read:k=>files.has(k)?new TextDecoder().decode(files.get(k)):null};
+}
+const enc=s=>new TextEncoder().encode(s);
+test('a failed write rolls back only after the whole group has finished: nothing new is left behind',async()=>{
+  const {writeRelease}=await import('../src/update-folder.js');
+  const folder=fakeFolder({'a.js':'old a','b.js':'old b','manifest.json':'old manifest','build.json':'old build'},{slow:{'a.js':300},fail:{'b.js':true}});
+  const release=[{path:'a.js',data:enc('new a')},{path:'b.js',data:enc('new b')},{path:'c.js',data:enc('new c')},{path:'manifest.json',data:enc('new manifest')},{path:'build.json',data:enc('new build')}];
+  await assert.rejects(writeRelease(folder.handle,release),/写入 b\.js 失败：locked；已还原为原来的版本/);
+  await new Promise(r=>setTimeout(r,500));
+  assert.equal(folder.read('a.js'),'old a','the slow write finished before the rollback and was put back');
+  assert.equal(folder.read('b.js'),'old b');assert.equal(folder.read('c.js'),null,'a file new in the release is removed again');
+  assert.equal(folder.read('manifest.json'),'old manifest');assert.equal(folder.read('build.json'),'old build');
+});
+test('unchanged files are skipped and manifest / build stamp are written last',async()=>{
+  const {writeRelease}=await import('../src/update-folder.js');
+  const folder=fakeFolder({'a.js':'same','manifest.json':'m1','build.json':'b1'});
+  const r=await writeRelease(folder.handle,[{path:'build.json',data:enc('b2')},{path:'a.js',data:enc('same')},{path:'manifest.json',data:enc('m2')},{path:'vendor/x.js',data:enc('x')}]);
+  assert.deepEqual(r,{written:3,total:4});assert.equal(folder.read('vendor/x.js'),'x');assert.equal(folder.read('build.json'),'b2');
+});
+test('the folder must be the copy Chrome is running: same name, version and build stamp',async()=>{
+  const {checkFolder}=await import('../src/update-folder.js');
+  const running={name:'AI圆桌lite',version:'0.7.0'},manifest=JSON.stringify(running);
+  assert.equal(await checkFolder(fakeFolder({'manifest.json':manifest,'build.json':'stamp-1'}).handle,running,'stamp-1'),true);
+  await assert.rejects(checkFolder(fakeFolder({'manifest.json':manifest,'build.json':'stamp-2'}).handle,running,'stamp-1'),/另一份副本/);
+  await assert.rejects(checkFolder(fakeFolder({'manifest.json':JSON.stringify({...running,version:'0.6.3'})}).handle,running,'stamp-1'),/v0\.6\.3/);
+  await assert.rejects(checkFolder(fakeFolder({'readme.txt':'x'}).handle,running,'stamp-1'),/没有 manifest\.json/);
+});

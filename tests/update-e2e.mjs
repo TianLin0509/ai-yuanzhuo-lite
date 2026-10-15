@@ -75,7 +75,18 @@ try{
   await shot('01-offer.png');
   assert.equal(await inPanel(`(()=>{const b=document.querySelector('#error-banner');return b&&!b.hidden?b.textContent:''})()`),'','side panel shows no error');
   const headerButton=await inPanel(`(()=>{const b=document.querySelector('#update');return b&&!b.hidden?b.textContent:''})()`);
-  assert.equal(headerButton,'可更新');log('Header shows a 新版本 button once a newer release is known');
+  assert.equal(headerButton,'可更新');log('Header shows a 可更新 button once a newer release is known');
+  // A round running in another window: nothing may be written (the service worker answers canUpdate with an error).
+  const before=fs.readFileSync(path.join(installed,'manifest.json'),'utf8');
+  await inPanel(`(()=>{const send=chrome.runtime.sendMessage.bind(chrome.runtime);window.__realSend=send;chrome.runtime.sendMessage=(m,...r)=>m&&m.action==='canUpdate'?Promise.resolve({ok:false,error:'还有进行中的圆桌（可能在其他窗口），请等本轮结束或停止后再更新。'}):send(m,...r);return true;})()`);
+  await inPanel(`document.querySelector('[data-up=install]').click()`);
+  const refused=await until(async()=>{const t=await inPanel(`document.querySelector('.update-error')?.innerText||''`);return /进行中的圆桌/.test(t)&&t;},'update refused while a round runs elsewhere');
+  await wait(1500);
+  assert.equal(fs.readFileSync(path.join(installed,'manifest.json'),'utf8'),before,'nothing written');
+  let dialogOpen=true;try{execFileSync('powershell',['-NoProfile','-ExecutionPolicy','Bypass','-File',path.join(root,'tests','helpers','dialog-button.ps1'),'-procId',String(metadata.browserPid),'-name','选择文件夹'],{encoding:'utf8'});}catch(error){dialogOpen=!String(error.stdout).includes('NOTFOUND');}
+  assert.equal(dialogOpen,false,'no folder dialog was opened');
+  log('A round running in another window blocks the update before the folder dialog; nothing is written ('+refused.trim()+')');
+  await inPanel(`(()=>{chrome.runtime.sendMessage=window.__realSend;return true;})()`);
   requests=[];
   await inPanel(`document.querySelector('[data-up=install]').click()`);
   // Chrome's folder dialog opens in the install folder; press its 选择文件夹 button.

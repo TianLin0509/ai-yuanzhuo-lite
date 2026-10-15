@@ -238,7 +238,7 @@ if(main){
 }else $('#open-main').onclick=()=>act('main');
 $('#new').onclick=newRoundtable;$('#history').onclick=historyList;$('#close-roundtable').onclick=closeRoundtable;
 $('#update').onclick=async()=>{if($('#update').dataset.kind==='online'){openUpdates();return;}const r=await act('update');if(r?.reloading)notice('正在更新，稍后会自动重新打开圆桌记录。');};
-initUpdates({dialog,act,busy:()=>busy(model?.session),changed:()=>{if(model)renderUpdate();}});
+initUpdates({dialog,act,request,busy:()=>busy(model?.session),changed:()=>{if(model)renderUpdate();}});
 async function panelVisibility(){if(!main)return;const data=await chrome.storage.session.get('arena.panel.'+windowId),open=!!data['arena.panel.'+windowId];$('#dock').hidden=open;$('#panel-active').hidden=!open;if(!open&&model)scheduleRefresh();}
 chrome.storage.onChanged.addListener((changes,area)=>{if(area==='session'&&changes['arena.panel.'+windowId])panelVisibility().catch(e=>error(e.message));if(area!=='local')return;const draft=changes['arena.draft.'+model?.session.id]?.newValue;if(draft&&model){const known=confirmedDrafts.get(model.session.id);if(!known||(draft.revision||0)>=(known.revision||0)){confirmedDrafts.set(model.session.id,draft);if(!pendingDrafts){model.draft=draft;renderController();}}}if(Object.keys(changes).some(k=>k==='arena.preferences'||k==='arena.index'||k==='arena.session.'+model?.session.id))scheduleRefresh();});
 function connectPanel(){port=chrome.runtime.connect({name:'arena-panel:'+windowId});port.postMessage({visible:!document.hidden});port.onDisconnect.addListener(()=>{setTimeout(()=>{try{connectPanel();scheduleRefresh();}catch(e){error('侧栏重新连接失败：'+e.message);}},300);});}

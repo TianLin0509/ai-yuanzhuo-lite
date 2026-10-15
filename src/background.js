@@ -11,6 +11,7 @@ const runningBuild=readBuild();let diskBuild={at:0,value:null};
 async function buildInfo(){if(Date.now()-diskBuild.at>15000)diskBuild={at:Date.now(),value:await readBuild()};const running=await runningBuild,disk=diskBuild.value;return {running:running?.commit||'',available:disk&&running&&disk.builtAt!==running.builtAt?disk.commit:''};}const sessions=new Map(),nativePanelState=new Map();
 // One-click update: check the release sources every 6 hours (and when asked); the pages read the summary from storage.
 const UPDATE='arena.update',UPDATE_ALARM='arena-update-check';
+async function assertIdle(){for(const meta of index.sessions)if(busy(await loadSession(meta.id)))throw new Error('还有进行中的圆桌（可能在其他窗口），请等本轮结束或停止后再更新。');}
 async function checkForUpdate(){
   const current=chrome.runtime.getManifest().version;let found;
   try{found=await findUpdate();}catch(error){found={manifest:null,results:[{name:'检查',ok:false,error:error.message}]};}
@@ -257,9 +258,12 @@ async function command(message){
   switch(message.action){
     case 'state':return state();
     case 'checkUpdate':return {update:await checkForUpdate()};
+    // Asked before the one-click update writes anything: a running round in any window would load new page scripts
+    // from disk while its service worker is still the old one.
+    case 'canUpdate':await assertIdle();return {idle:true};
     case 'update':{
       // Reload in place so the extension ID, history and window ownership survive (see restoreAfterReload).
-      for(const meta of index.sessions)if(busy(await loadSession(meta.id)))throw new Error('还有进行中的圆桌，请等本轮结束或停止后再更新。');
+      await assertIdle();
       setTimeout(()=>chrome.runtime.reload(),150);return {...await state(),reloading:true};
     }
     case 'preferences':{if(!['a','b','c'].includes(message.layout))throw new Error('未知阅读视图。');await chrome.storage.local.set({'arena.preferences':{layout:message.layout}});return state();}

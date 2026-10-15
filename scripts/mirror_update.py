@@ -6,18 +6,20 @@ This product lives in its own folder yuanzhuo-lite/. Order: bundle -> signature 
 sees a manifest that points at a file not yet uploaded. Usage (needs ECS_PWD):
     uv run --with paramiko python scripts/mirror_update.py <release dir> <bundle file name>
 """
-import hashlib, os, sys, time, urllib.request
+import base64, hashlib, os, sys, time, urllib.request
 from pathlib import Path
 import paramiko
 
 HOST, USER = "8.130.158.231", "Administrator"
 REMOTE = "C:/pptutor-updates/yuanzhuo-lite"
 PUBLIC = "https://me.lt-stockpartner.tech/pptutor/yuanzhuo-lite"
+# Pinned host key (read 2026-10-15): a server that presents another key never receives the password.
+HOST_KEY = paramiko.Ed25519Key(data=base64.b64decode("AAAAC3NzaC1lZDI1NTE5AAAAIOmuQya3HFIUb1vZ5aMmnsBWB0VrGjMN+HEBu8GA5OR+"))
 
 def main():
     out, bundle = Path(sys.argv[1]), sys.argv[2]
     names = sorted(n.name for n in out.glob("ai-yuanzhuo-lite-v*.zip")) + [bundle, "update-manifest.sig", "update-manifest.json"]
-    client = paramiko.SSHClient(); client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    client = paramiko.SSHClient(); client.get_host_keys().add(HOST, "ssh-ed25519", HOST_KEY); client.set_missing_host_key_policy(paramiko.RejectPolicy())
     client.connect(HOST, username=USER, password=os.environ["ECS_PWD"], timeout=30)
     try:
         sftp = client.open_sftp()
