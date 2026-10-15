@@ -64,14 +64,18 @@
     return normalized(value(copy));}
   // Sites expose a stable per-message key under different attributes across page versions.
   function userKey(node,config){if(!node||!config.userKeyAttribute)return null;for(const name of [].concat(config.userKeyAttribute)){const key=node.getAttribute(name);if(key)return key;}return null;}
-  const promptLetters=text=>String(text).replace(/[\s\p{P}\p{Z}]/gu,'');
+  // Sites rewrite the question bubble: ChatGPT 2026-10 renders `x` as code (dropping the backticks) and linkifies a
+  // URL by repeating part of it. So only letters and digits are compared, ignoring case: every one of the prompt's,
+  // in order, with at most a fifth extra on the page, so a different long message cannot pass by accident.
+  const promptLetters=text=>String(text).replace(/[\s\p{P}\p{S}\p{Z}]/gu,'').toLowerCase();
+  function promptShown(text,prompt){const page=promptLetters(text),want=[...promptLetters(prompt)];if(!want.length)return false;if(page.includes(want.join('')))return true;if(page.length>want.length*1.2+40)return false;let i=0;for(const ch of page)if(ch===want[i]&&++i===want.length)return true;return false;}
   function ownsUser(job,nodes){
     const last=nodes.at(-1);if(!last)return false;
     const text=userText(last,job.config),key=userKey(last,job.config);
     const messageId=job.config.userIdAttribute?last.querySelector('['+job.config.userIdAttribute+']')?.getAttribute(job.config.userIdAttribute):null;
     if(job.anchor){const same=(job.anchor.key?key===job.anchor.key||job.anchor.messageId&&messageId===job.anchor.messageId:nodes.length===job.anchor.userCount)&&hash(text)===job.anchor.textHash;if(same&&messageId)job.anchor.messageId=messageId;return !!same;}
     // Virtual lists may remove older rows; stable site message IDs take precedence over row counts.
-    if((key?key===job.baseline.userKey:nodes.length!==job.baseline.userCount+1)||!job.prompt||!promptLetters(text).includes(promptLetters(job.prompt)))return false;
+    if((key?key===job.baseline.userKey:nodes.length!==job.baseline.userCount+1)||!job.prompt||!promptShown(text,job.prompt))return false;
     job.anchor={userCount:nodes.length,textHash:hash(text),key,messageId};return true;
   }
   function markdown(node,config={}){
@@ -82,20 +86,24 @@
     // Rich blocks (ChatGPT's editable email / document drafts) carry the site's own clean copy of their text.
     if(config.copyBlock&&node.matches(config.copyBlock.block)){const copy=node.getAttribute(config.copyBlock.attr),title=config.copyBlock.title&&node.querySelector(config.copyBlock.title)?.value?.trim();if(copy&&copy.trim())return '\n\n'+(title?'**'+title+'**\n\n':'')+copy.trim()+'\n\n';}
     // Site code blocks carry a language label and buttons outside <pre>; read the label, fence the code.
-    if(tag==='PRE'||node.matches('.md-code-block,.custom-code-block-container')||config.code&&node.matches(config.code.block)){const code=node.querySelector('pre code,code,pre')||node;const language=(code.className||'').match(/language-([\w-]+)/)?.[1]||node.querySelector('.md-code-block-banner span')?.textContent?.trim()||(config.code&&node.querySelector(config.code.language)?.textContent?.trim().toLowerCase().replace(/\s+/g,'-'))||'';const body=visibleText(code,config).replace(/\n$/,'');const fence='`'.repeat(Math.max(3,...(body.match(/`+/g)||[]).map(s=>s.length+1)));return '\n\n'+fence+language+'\n'+body+'\n'+fence+'\n\n';}
+    if(tag==='PRE'||node.matches('.md-code-block,.custom-code-block-container')||config.code&&node.matches(config.code.block)){const code=node.querySelector('pre code,code,pre')||node;const language=(code.className||'').match(/language-([\w-]+)/)?.[1]||node.querySelector('.md-code-block-banner span')?.textContent?.trim()||(config.code&&node.querySelector(config.code.language)?.textContent?.trim().toLowerCase().replace(/\s+/g,'-'))||node.querySelector('[data-language]')?.getAttribute('data-language')||'';
+      // CodeMirror (ChatGPT 2026-10) keeps each line in its own element with no newline characters between them.
+      const lines=code.querySelectorAll('.cm-line'),body=(lines.length?[...lines].map(line=>line.textContent).join('\n'):visibleText(code,config)).replace(/\n$/,'');const fence='`'.repeat(Math.max(3,...(body.match(/`+/g)||[]).map(s=>s.length+1)));return '\n\n'+fence+language+'\n'+body+'\n'+fence+'\n\n';}
     if(tag==='BR')return '\n';
     if(tag==='IMG')return node.getAttribute('alt')?'['+node.getAttribute('alt')+']':'';
     const text=[...node.childNodes].map(md).join('');
     if(/^H[1-6]$/.test(tag))return '\n\n'+'#'.repeat(Number(tag[1]))+' '+text.trim()+'\n\n';
     if(tag==='CODE')return '`'+text+'`';
-    if(tag==='STRONG'||tag==='B')return '**'+text+'**';
-    if(tag==='EM'||tag==='I')return '*'+text+'*';
+    if(tag==='STRONG'||tag==='B'||config.bold&&node.matches(config.bold))return '**'+text+'**';
+    if(tag==='EM'||tag==='I'||config.italic&&node.matches(config.italic))return '*'+text+'*';
     if(tag==='LI')return '\n'+(node.parentElement?.tagName==='OL'?[...node.parentElement.children].indexOf(node)+1+'. ':'- ')+text.trim()+'\n';
     if(tag==='BLOCKQUOTE')return '\n\n'+text.trim().split('\n').map(line=>'> '+line).join('\n')+'\n\n';
     if(tag==='A'){const href=node.getAttribute('href')||'';return /^https?:\/\//i.test(href)?'['+text+']('+href.replaceAll(')','%29')+')':text;}
-    if(tag==='TR')return '\n| '+[...node.children].map(cell=>md(cell).trim().replaceAll('|','\\|')).join(' | ')+' |'+(node.parentElement?.tagName==='THEAD'?'\n| '+[...node.children].map(()=>'---').join(' | ')+' |':'');
+    if(tag==='TR')return '\n| '+[...node.children].map(cell=>md(cell).trim().replaceAll('|','\\|')).join(' | ')+' |'+(headerRow(node)?'\n| '+[...node.children].map(()=>'---').join(' | ')+' |':'');
     return ['P','DIV','SECTION','ARTICLE','UL','OL','TABLE'].includes(tag)?'\n'+text+'\n':text;
   }
+  // A header row sits in <thead>, or (ChatGPT 2026-10) is a table's first row made only of <th> cells.
+  function headerRow(row){if(row.parentElement?.tagName==='THEAD')return true;const table=row.closest('table');return !!table&&!table.querySelector('thead')&&table.querySelector('tr')===row&&[...row.children].every(cell=>cell.tagName==='TH');}
   function snapshot(config){const nodes=answers(config),last=nodes.at(-1),userNodes=users(config);return {count:nodes.length,lastHash:hash(answerText(last,config)),userCount:userNodes.length,userKey:userKey(userNodes.at(-1),config),url:cleanUrl()};}
   function cleanup(job){if(job.observer){job.observer.disconnect();job.observer=null;diagnostics.observers--;}if(job.timer){clearTimeout(job.timer);job.timer=null;diagnostics.timers--;}if(job.flushTimer){clearTimeout(job.flushTimer);job.flushTimer=null;diagnostics.timers--;}if(diagnostics.activeRequest===job.requestId)diagnostics.activeRequest=null;}
   function retire(job){cleanup(job);job.cancelled=true;job.lastElement=null;job.userAnchor=null;job.lastText='';delete job.prompt;jobs.set(job.requestId,{requestId:job.requestId,status:job.status,sequence:job.sequence,cancelled:true});for(const [key,value] of jobs){if(jobs.size<=32)break;if(value.cancelled)jobs.delete(key);}}
@@ -105,7 +113,9 @@
     const message={type:'YZ_EVENT',requestId:job.requestId,sequence:job.sequence,status,text,error,url:job.expectedUrl,anchor:job.anchor,phase:job.dispatched?'attempted':'not_sent',...extra};
     chrome.runtime.sendMessage(message).then(result=>{if(result?.ok===false){diagnostics.lastError=result.error;retire(job);console.warn('[AI圆桌lite] 状态保存失败：',result.error);}}).catch(error=>{diagnostics.lastError=error.message;retire(job);console.warn('[AI圆桌lite] 扩展连接中断：',error.message);});
   }
-  function schedule(job,ms=3000){if(job.cancelled||job.timer)return;diagnostics.timers++;job.timer=setTimeout(()=>{diagnostics.timers--;job.timer=null;inspect(job);schedule(job);},ms);}
+  // The timed read does not rely on the observer having seen a change: a missed mutation must never stall a round
+  // (ChatGPT 2026-10 moved its thread out of <main>; the answer finished on screen and was never read).
+  function schedule(job,ms=3000){if(job.cancelled||job.timer)return;diagnostics.timers++;job.timer=setTimeout(()=>{diagnostics.timers--;job.timer=null;job.dirty=true;inspect(job);schedule(job);},ms);}
   function changed(job){job.dirty=true;if(job.cancelled||job.flushTimer)return;diagnostics.timers++;job.flushTimer=setTimeout(()=>{diagnostics.timers--;job.flushTimer=null;inspect(job);},900);}
   function completionMarker(config,element){if(element&&config.complete.some(selector=>element.matches(selector)))return true;let root=element;for(let depth=0;root&&depth<4;depth++,root=root.parentElement){if(depth&&config.answer.some(selector=>root.querySelectorAll(selector).length>1))break;if(find(config.complete,root))return true;}return false;}
   const followsUser=(element,user)=>!!element?.isConnected&&!!user?.isConnected&&!user.contains(element)&&!!(user.compareDocumentPosition(element)&Node.DOCUMENT_POSITION_FOLLOWING);
@@ -154,8 +164,8 @@
   function finish(job){if(pendingContent(job)){job.dirty=true;return;}if(!followsUser(job.lastElement,users(job.config).at(-1))){job.lastElement=null;job.dirty=true;return;}const text=answerMarkdown(job.lastElement,job.config);if(!text){emit(job,'attention',job.lastText,'网页答案为空，未标记完成。');}else emit(job,'done',text,job.forced?'按你的确认读取了网页最新回答，未核对提问原文。':'',{format:'markdown'});retire(job);}
   function watch(job){
     for(const other of jobs.values())if(other!==job&&!other.cancelled)retire(other);
-    const root=find(job.config.root)||document.body;
-    job.observer=new MutationObserver(()=>changed(job));job.observer.observe(root,{childList:true,subtree:true,characterData:true,attributes:true,attributeFilter:['disabled','aria-disabled','aria-label','class']});diagnostics.observers++;diagnostics.activeRequest=job.requestId;job.dirty=true;schedule(job,1000);
+    // Observe the whole page: a site may render the conversation outside its <main> landmark.
+    job.observer=new MutationObserver(()=>changed(job));job.observer.observe(document.body,{childList:true,subtree:true,characterData:true,attributes:true,attributeFilter:['disabled','aria-disabled','aria-label','class']});diagnostics.observers++;diagnostics.activeRequest=job.requestId;job.dirty=true;schedule(job,1000);
   }
   function limitNotice(config){if(!config.limit)return '';for(const selector of config.limit.selectors)for(const el of document.querySelectorAll(selector)){const text=normalized(el.textContent).replace(/\s+/g,' ');if(visible(el)&&config.limit.text.test(text))return text.slice(0,80);}return '';}
   function assertNoLimit(config){const notice=limitNotice(config);if(notice)throw new Error('网页提示额度已用完（'+notice+'），未发送本轮提问。请等待额度恢复或在原网页处理。');}

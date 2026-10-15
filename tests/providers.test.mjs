@@ -182,6 +182,39 @@ const PAGES={
     prompt:'第一行 GPT\n\n  缩进保留 <x> & y',
     expect:{text:['回答：第一行 GPT','```python\ndef add(a, b):\n    return a + b\n```','END_GPT'],absent:['ChatGPT said','正在回答','Python\n'],mode:'Medium'}
   },
+  // ChatGPT 2026-10-15 (logged in, live, structure copied from a real temporary chat):
+  // - the first send from a new chat re-creates <main> (measured: the old element is detached), so an observer on the
+  //   old one hears nothing more; the answer finished on screen and was never read (round stuck until the 10-minute limit);
+  // - the question bubble renders Markdown: `f(2)` becomes <code> without backticks and a URL is linkified by repeating it;
+  // - answers use a new renderer: bold / italic are spans with data-d-* attributes, code blocks are CodeMirror with one
+  //   element per line and no newline characters, a table's header row is <th> cells inside <tbody>.
+  'chatgpt#2026-10-15':{
+    html:`<div id="root"><main id="first"><div id="thread"></div><form><div class="ProseMirror" contenteditable="true" aria-label="Ask ChatGPT"></div>
+      <button type="button" aria-label="Select ChatGPT model">Medium</button><button type="submit" aria-label="Send">↑</button></form></main></div>`,
+    setup:()=>{
+      const input=document.querySelector('.ProseMirror');
+      document.querySelector('form').addEventListener('submit',e=>e.preventDefault());
+      input.addEventListener('paste',e=>{e.preventDefault();const text=e.clipboardData.getData('text/plain');input.innerHTML=text.split('\n').map(line=>'<p>'+(line?line.replaceAll('&','&amp;').replaceAll('<','&lt;'):'<br>')+'</p>').join('');});
+      document.querySelector('[aria-label="Send"]').onclick=()=>{
+        const text=[...input.children].map(p=>p.textContent).join('\n');window.sent.push(text);input.innerHTML='';
+        document.querySelector('[aria-label="Send"]').setAttribute('aria-label','Stop streaming');
+        const old=document.querySelector('main'),fresh=old.cloneNode(true);fresh.id='second';old.replaceWith(fresh);
+        const stop=fresh.querySelector('[aria-label="Stop streaming"]');
+        const bubble=text.replaceAll('&','&amp;').replaceAll('<','&lt;').replace(/`([^`]+)`/g,'<code>$1</code>').replace('(https://example.com)','\\([https://example.com)](https://example.com\\))');
+        fresh.querySelector('#thread').insertAdjacentHTML('beforeend',`<div data-turn-key="u-1"><div data-talvt-turn-state="in_progress"><div><h4>You said:</h4><div data-chatgpt-search-unit-key="t-0:0:user" data-chatgpt-search-message-ids="u-1"><div data-user-message-bubble="true"><div dir="auto">${bubble}</div></div><button aria-label="Copy message"></button></div></div></div></div>`);
+        const turn=fresh.querySelector('[data-turn-key]');
+        // As on the live page, the answer appears only after the first read that follows the click.
+        setTimeout(()=>turn.firstElementChild.insertAdjacentHTML('beforeend','<div><div data-chatgpt-search-unit-key="t-0:2:assistant" data-chatgpt-search-message-ids="a-1"><h4 data-conversation-role="assistant" class="sr-only">ChatGPT said:</h4><div><div data-markdown-text-style="assistant-message"><p>正在回答</p></div></div></div></div>'),900);
+        setTimeout(()=>{turn.querySelector('[data-markdown-text-style]').innerHTML=`<div data-markdown-copy="contents"><div dir="auto" data-d-inline-reveal=""><h2 data-d-component="title"><span>结论</span></h2>
+          <p data-d-component="text"><span>输出是 </span><span data-d-component="text" data-d-default-strong="" data-d-inline=""><span>4</span></span><span>，因为函数将输入</span><span data-d-component="text" data-d-font-style="italic" data-d-inline=""><span>乘以 2</span></span><span>，见 </span><a href="https://example.com"><span>示例</span><span><svg></svg></span></a></p>
+          <div><div data-code-block="true" data-markdown-copy="code-block"><div data-markdown-copy="exclude" contenteditable="false"><svg></svg><div class="truncate">Python</div><div data-code-block-controls="true"><button aria-label="Copy code"></button><button aria-label="Run code">Run</button></div></div>
+          <div class="grid"><div class="cm-editor"><div class="cm-scroller"><div class="cm-content" contenteditable="true" role="textbox" aria-label="Edit code" data-language="python"><div class="cm-line"><span>def</span> <span>f</span>(x):</div><div class="cm-line">    <span>return</span> x <span>*</span> 2</div><div class="cm-line"><br></div><div class="cm-line"><span>print</span>(f(2))</div></div></div></div></div></div></div>
+          <div data-d-component="table"><table><tbody><tr><th scope="col"><p><span>项目</span></p></th><th scope="col"><p><span>结果</span></p></th></tr><tr><td><p><code>f(2)</code></p></td><td><p><span>4</span></p></td></tr></tbody></table></div><p><span>END_GPT</span></p></div></div>`;},1300);
+        setTimeout(()=>{stop.setAttribute('aria-label','Send');turn.firstElementChild.setAttribute('data-talvt-turn-state','complete');turn.querySelector('[data-chatgpt-search-unit-key$=":assistant"]').parentElement.insertAdjacentHTML('beforeend','<div class="turn-action-controls"><button aria-label="Copy"></button><button aria-label="Regenerate response"></button></div>');},1900);};
+    },
+    prompt:'代码 `f(2)` 输出什么？参考 [示例](https://example.com)\n\n请给出结论',
+    expect:{text:['## 结论','输出是 **4**','*乘以 2*','[示例](https://example.com)','```python\ndef f(x):\n    return x * 2\n\nprint(f(2))\n```','| 项目 | 结果 |\n| --- | --- |\n| `f(2)` | 4 |','END_GPT'],absent:['ChatGPT said','正在回答','Run','Python\n'],mode:'Medium'}
+  },
   // ChatGPT 2026-09-29 (live): an earlier answer holds an editable email writing block (a ProseMirror "Start writing"
   // editor placed before the composer), an earlier question shows an edit box's own "Send", and the new answer's
   // writing block gets its body a few seconds after the answer ends. Only the composer may be typed into and sent.

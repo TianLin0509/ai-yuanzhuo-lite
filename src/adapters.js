@@ -16,7 +16,6 @@ globalThis.YuanzhuoAdapters = {
     complete:['[data-testid="copy-button"]','[role="button"]:has(svg path[d^="M6.14929 4.02032"])','button[aria-label*="复制"]','[role="button"][aria-label*="复制"]','button[aria-label*="Copy"]'],
     // Logged-out states: DeepSeek redirects to /sign_in; the others show a login entry.
     login:{url:/^\/sign_in/},
-    root:['main','[role="main"]'],
     conversation:/\/a\/chat\/s\/[^/]+|\/chat\/[^/]+/
   },
   kimi: {
@@ -35,7 +34,6 @@ globalThis.YuanzhuoAdapters = {
     complete:['.segment-assistant-actions .icon-button','button[aria-label*="复制"]','button[aria-label*="Copy"]','[class*="copy-button"]','[data-testid="copy-button"]'],
     login:{selectors:['.not-login-icon','.next-sidebar-history-list__login']},
     mode:[{select:'[data-testid="model-select-trigger"]'},{select:'.current-model .name'}],
-    root:['main','[role="main"]','[class*="chat-content"]'],
     conversation:/\/chat\/[^/]+/
   },
   // Gemini 2026-09: Quill editor. Stop disappears ~1.5 s before the answer body drops
@@ -56,7 +54,6 @@ globalThis.YuanzhuoAdapters = {
     // The button text is the mode in every UI language; the English aria-label is the signed-out fallback.
     mode:[{select:'[data-test-id="bard-mode-menu-button"]'},{select:'button[aria-label^="Open mode picker"]',attr:'aria-label',pattern:/currently\s+(.+)$/i}],
     exclude:'.cdk-visually-hidden,model-thoughts,sources-list,.response-footer',
-    root:['chat-window','main','[role="main"]'],
     conversation:/\/app\/[^/]+/
   },
   // ChatGPT 2026-09 (StyleX build): messages are li[data-message-role]; the assistant item gains
@@ -74,6 +71,8 @@ globalThis.YuanzhuoAdapters = {
     complete:['[data-message-complete]','[data-assistant-message-actions]','[data-testid="copy-turn-action-button"]','.turn-action-controls button[aria-label="Regenerate response"]'],
     exclude:'[data-message-attribution],[data-message-content-controls],[data-assistant-placeholder-slot],[data-markdown-copy="exclude"]',
     // Writing blocks (email / document drafts) carry ChatGPT's own copy of their body; an email subject sits in its own box.
+    // 2026-10 renderer: bold and italic are spans marked by attributes, not <strong>/<em>.
+    bold:'[data-d-default-strong]',italic:'[data-d-font-style="italic"]',
     copyBlock:{block:'[data-markdown-copy="rich-block"][data-markdown-copy-text]',attr:'data-markdown-copy-text',title:'textarea'},
     // A writing block whose body has not been filled in yet (it re-mounts after the answer ends; slower in background tabs).
     pending:['[data-testid="chatgpt-writing-block"]:not([data-markdown-copy-text])','[data-testid="chatgpt-writing-block"][data-markdown-copy-text=""]'],
@@ -81,7 +80,6 @@ globalThis.YuanzhuoAdapters = {
     // 2026-09-27 code blocks: a div with a header (language name) and a <code>, no <pre>.
     code:{block:'[data-markdown-copy="code-block"]',language:'[data-markdown-copy="exclude"] .truncate'},
     mode:[{select:'[data-testid="model-switcher-dropdown-button"]'},{select:'button[aria-label="Select ChatGPT model"]'}],
-    root:['main','[role="main"]'],
     conversation:/\/u?c\/[^/]+/
   },
   // Claude: ProseMirror editor; the answer body reports data-is-streaming while generating.
@@ -99,7 +97,6 @@ globalThis.YuanzhuoAdapters = {
     exclude:'.sr-only,details,[data-testid*="thinking" i]',
     login:{url:/^\/(login|logout)/},
     mode:[{select:'[data-testid="model-selector-dropdown"]'}],
-    root:['main','[role="main"]'],
     conversation:/\/chat\/[^/]+/
   },
   // Grok: guests get a sign-up card instead of an answer after the first prompt.
@@ -113,7 +110,6 @@ globalThis.YuanzhuoAdapters = {
     complete:['.action-buttons button[aria-label="Copy"]','button[aria-label="Regenerate"]'],
     login:{selectors:['[data-testid="anon-paywall-sign-up-card"]']},
     mode:[{select:'button[aria-label="Model select"]'}],
-    root:['main','[role="main"]'],
     conversation:/\/c\/[^/]+/
   },
   // 元宝: Quill editor; one answer is an ai list item, its toolbar shows once finished.
@@ -129,7 +125,6 @@ globalThis.YuanzhuoAdapters = {
     exclude:'[class*="think"],[class*="process"],[class*="deep-search"],[class*="timeline"],[class*="sources"]',
     login:{selectors:['.agent-dialogue__tool__login','.agent-dialogue__content--common__header.nologin','.hyc-login__dialog']},
     mode:[{select:'[aria-label="Switch model"]'}],
-    root:['main','[role="main"]','.agent-chat__list'],
     conversation:/\/chat\/[^/]+\/[^/]+/
   },
   // 千问 (www.qianwen.com) 2026-09: Slate editor; answers carry a feedback toolbar once finished.
@@ -151,7 +146,6 @@ globalThis.YuanzhuoAdapters = {
     // After several automated questions Alibaba's baxia check opens a /punish iframe (seen 2026-09-26, AI圆桌 Android too).
     blocked:['.baxia-dialog-content iframe','iframe[src*="/punish"]'],
     mode:[{select:'button',pattern:/^(Qwen\S*)$/,first:true},{select:'button[aria-label="快速"],button[aria-label="思考"],button[aria-label="深度思考"],button[aria-label="思考研究"]',attr:'aria-label',first:true}],
-    root:['main','[role="main"]','.chat-room-outer-wrap'],
     conversation:/\/chat\/[^/]+/
   },
   doubao: {
@@ -174,7 +168,6 @@ globalThis.YuanzhuoAdapters = {
     stop:['[class*="break-btn"]:has(svg path[d^="M12 0.5C18.3513"])','button[aria-label*="停止"]:not([data-index-entry-key])','button[aria-label*="Stop"]:not([data-index-entry-key])','button[class*="stop"]:not([data-index-entry-key])','[data-testid="stop-button"]'],
     complete:['[data-foundation-type="receive-message-action-bar"] button','button[aria-label*="复制"]:not([data-index-entry-key])','[data-testid="copy-button"]','[class*="copy-button"]','button[aria-label*="Copy"]:not([data-index-entry-key])'],
     busy:['.md-box-root[data-streaming="true"]'],
-    root:['main','[role="main"]','[class*="message-list"]'],
     blocked:['iframe[src*="verifycenter/captcha"]'],
     login:{selectors:['[data-testid="to_login_button"]']},
     // Document / artifact cards keep the real content outside the chat body (2026-09-24: artifact_block).
