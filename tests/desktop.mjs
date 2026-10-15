@@ -18,7 +18,10 @@ try{
   await context.route('https://**/*',route=>{const provider=providerFor(route.request().url());return provider?route.fulfill({contentType:'text/html',body:fixture(provider)}):route.abort();});
   let worker=context.serviceWorkers()[0];if(!worker)worker=await context.waitForEvent('serviceworker');const extensionId=new URL(worker.url()).host,base=`chrome-extension://${extensionId}/`;
   const page=await context.newPage();await page.goto(base+'main.html');await until(async()=>!!(await command(page,'state')).session,'initial state');
-  const initial=await command(page,'state'),s=newSession([...DEFAULT_MEMBERS]);s.id=initial.session.id;s.title='桌面圆桌 · 三种阅读方式';
+  // The record page opens its member pages and saves their bindings (then re-checks each page once it loads). Seed only
+  // after that settles, keeping the bindings, or the worker's later save overwrites the seeded rounds.
+  await until(async()=>{const x=(await command(page,'state')).session;return x.members.every(p=>x.bindings[p]?.tabId);},'member pages bound');await wait(2500);
+  const initial=await command(page,'state'),s=newSession([...DEFAULT_MEMBERS]);s.id=initial.session.id;s.bindings=initial.session.bindings;s.title='桌面圆桌 · 三种阅读方式';
   const samples=[['主界面和侧栏应该怎样分工？','ask'],['比较其他两家的方案，重点讨论重复信息。','discuss'],['请 Kimi 总结已确认的设计。','summary']];
   for(const [i,[prompt,kind]] of samples.entries()){
     const r=makeRound(kind,prompt,s,{captain:'kimi'});r.createdAt=Date.now()-(samples.length-i)*60000;

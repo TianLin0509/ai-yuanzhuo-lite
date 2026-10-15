@@ -28,6 +28,7 @@ test('side panel swaps, removes and adds members inline, each member page openin
     assert.equal(await page.locator('#connect').count(),0,'no connect button');
     const initial=await until(async()=>{const st=await command('state');return st.session.members.every(p=>st.session.bindings[p]?.tabId)&&st;},'member pages opened when the panel loaded');
     await until(async()=>same(await pages(),initial.session.members),'one page per member');
+    await page.waitForTimeout(2500);// each page is re-checked once it loads; seed after that, or the later save overwrites the seed
     // Seed one finished round: DeepSeek and Doubao answered, Kimi was skipped (quota used up).
     const s=newSession(['deepseek','kimi','doubao']);s.id=initial.session.id;s.bindings=initial.session.bindings;assert.deepEqual(initial.session.members,['deepseek','kimi','doubao']);
     const r=makeRound('ask','成员编辑测试',s);for(const j of r.jobs)Object.assign(j,j.provider==='kimi'?{status:'skipped'}:{status:'done',format:'markdown',text:j.provider.toUpperCase()+'_ANSWER',phase:'attempted'});s.rounds.push(r);

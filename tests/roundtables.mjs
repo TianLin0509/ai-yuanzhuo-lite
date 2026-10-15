@@ -26,7 +26,7 @@ try{
   const providerTabs=async()=>(await page.evaluate(id=>chrome.tabs.query({windowId:id}),windowId)).filter(t=>providerFor(t.url||t.pendingUrl));
 
   // The record page opens its members' pages by itself; this test replaces that roundtable, so close them below.
-  await until(async()=>(await providerTabs()).length===3,'member pages opened on load');const firstPages=(await providerTabs()).map(t=>t.id);
+  await until(async()=>{const x=(await command('state')).session;return x.members.every(p=>x.bindings[p]?.tabId);},'member pages opened and bound on load');await wait(2500);const firstPages=(await providerTabs()).map(t=>t.id);
   // A finished roundtable whose members were in saved conversations.
   const initial=await command('state'),s=newSession([...DEFAULT_MEMBERS]);s.id=initial.session.id;s.title='找回测试 · 旧圆桌';
   const r=makeRound('ask','旧圆桌的问题',s);r.createdAt=Date.now()-5*60000;s.createdAt=r.createdAt-60000;
