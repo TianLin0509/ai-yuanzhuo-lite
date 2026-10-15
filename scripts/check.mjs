@@ -11,5 +11,6 @@ run(['tests/desktop.mjs']);
 run(['tests/roundtables.mjs']);
 run(['tests/workflow.mjs']);
 run(['tests/rescue.mjs']);
+run(['tests/close-quiet.mjs']);
 run(['tests/native-desktop.mjs']);
 run(['tests/native-background.mjs']);
