@@ -8,7 +8,8 @@ import {newSession,makeRound,PROVIDERS,DEFAULT_MEMBERS,providerFor} from '../src
 await import('../scripts/build.mjs');
 const root=path.resolve(import.meta.dirname,'..'),out=path.join(root,'artifacts','20260912-desktop-codex');fs.mkdirSync(out,{recursive:true});
 const profileRoot=process.platform==='win32'?'C:/VibeData/BrowserProfiles/AI-Yuanzhuo-Lite/tests':os.tmpdir();fs.mkdirSync(profileRoot,{recursive:true});
-const context=await chromium.launchPersistentContext(fs.mkdtempSync(path.join(profileRoot,'desktop-')),{channel:'chromium',headless:true,args:[`--disable-extensions-except=${path.join(root,'dist')}`,`--load-extension=${path.join(root,'dist')}`],viewport:{width:1440,height:1000}});
+// DNS is blocked: member pages now open as soon as a record page loads, before Playwright can intercept their first load.
+const context=await chromium.launchPersistentContext(fs.mkdtempSync(path.join(profileRoot,'desktop-')),{channel:'chromium',headless:true,args:[`--disable-extensions-except=${path.join(root,'dist')}`,`--load-extension=${path.join(root,'dist')}`,'--host-resolver-rules=MAP * ~NOTFOUND'],viewport:{width:1440,height:1000}});
 const failures=[],checks=[];context.on('page',p=>p.on('pageerror',e=>failures.push(e.message)));
 const wait=ms=>new Promise(r=>setTimeout(r,ms));
 async function until(fn,description){const start=Date.now();while(Date.now()-start<15000){if(await fn())return;await wait(80);}throw Error('Timed out: '+description);}
@@ -17,7 +18,10 @@ try{
   await context.route('https://**/*',route=>{const provider=providerFor(route.request().url());return provider?route.fulfill({contentType:'text/html',body:fixture(provider)}):route.abort();});
   let worker=context.serviceWorkers()[0];if(!worker)worker=await context.waitForEvent('serviceworker');const extensionId=new URL(worker.url()).host,base=`chrome-extension://${extensionId}/`;
   const page=await context.newPage();await page.goto(base+'main.html');await until(async()=>!!(await command(page,'state')).session,'initial state');
-  const initial=await command(page,'state'),s=newSession([...DEFAULT_MEMBERS]);s.id=initial.session.id;s.title='桌面圆桌 · 三种阅读方式';
+  // The record page opens its member pages and saves their bindings (then re-checks each page once it loads). Seed only
+  // after that settles, keeping the bindings, or the worker's later save overwrites the seeded rounds.
+  await until(async()=>{const x=(await command(page,'state')).session;return x.members.every(p=>x.bindings[p]?.tabId);},'member pages bound');await wait(2500);
+  const initial=await command(page,'state'),s=newSession([...DEFAULT_MEMBERS]);s.id=initial.session.id;s.bindings=initial.session.bindings;s.title='桌面圆桌 · 三种阅读方式';
   const samples=[['主界面和侧栏应该怎样分工？','ask'],['比较其他两家的方案，重点讨论重复信息。','discuss'],['请 Kimi 总结已确认的设计。','summary']];
   for(const [i,[prompt,kind]] of samples.entries()){
     const r=makeRound(kind,prompt,s,{captain:'kimi'});r.createdAt=Date.now()-(samples.length-i)*60000;

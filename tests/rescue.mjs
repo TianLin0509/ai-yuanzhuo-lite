@@ -18,7 +18,7 @@ async function until(fn,description,timeout=30000){const start=Date.now();let la
 try{
   await context.route('https://**/*',route=>{const provider=providerFor(route.request().url());return provider?route.fulfill({contentType:'text/html',body:fixture(provider)}):route.abort();});
   let worker=context.serviceWorkers()[0];if(!worker)worker=await context.waitForEvent('serviceworker');const base=`chrome-extension://${new URL(worker.url()).host}/`;
-  const page=await context.newPage();await page.goto(base+'main.html');await page.waitForSelector('#base-time');
+  const page=await context.newPage();const before=new Set(context.pages());await page.goto(base+'main.html');await page.waitForSelector('#base-time');
   const command=(action,data={})=>page.evaluate(async({action,data})=>{const windowId=(await chrome.windows.getCurrent()).id;const r=await chrome.runtime.sendMessage({type:'YZ_COMMAND',windowId,action,...data});if(!r?.ok)throw Error(r?.error);return r;},{action,data});
   const state=()=>command('state');
   const jobs=async()=>(await state()).session.rounds.at(-1).jobs,current=async p=>(await jobs()).findLast(j=>j.provider===p&&!j.replacedBy);
@@ -32,8 +32,8 @@ try{
   // Two members, so a third AI is free to take over a seat later.
   await command('members',{members:['deepseek','kimi']});await page.waitForFunction(()=>document.querySelectorAll('.member-row').length===2);
   assert.deepEqual(await escapes('DeepSeek'),['换人'],'before any round only 换人 applies');
-  const before=new Set(context.pages());await page.locator('#connect').click();
-  let opened;await until(()=>(opened=context.pages().filter(p=>!before.has(p))).length===2,'two member pages');
+  // The roundtable opened its three default members' pages on load; taking Doubao out closed its page.
+  let opened;await until(()=>(opened=context.pages().filter(p=>!before.has(p)&&!p.isClosed())).length===2,'two member pages');
   for(const [i,p] of ['deepseek','kimi'].entries()){site[p]=opened[i];await opened[i].goto(PROVIDERS[p].url);await opened[i].waitForFunction(()=>!!globalThis.__fixture);}
 
   // 1. First round; every member shows the four escape actions in every state.
@@ -63,13 +63,16 @@ try{
   await wait(800);assert.equal((await sent('kimi')).length,kimiSends,'re-read never resends');
   checks.push('重新提取 on a running member restarts the reading without sending again');
 
-  // 4. 换人 on the running member: 豆包 takes over this round with the same material; Kimi's page is told to stop.
+  // 4. 换人 on the running member: 豆包 takes over this round with the same material; Kimi's page is told to stop and then
+  // closes (members and pages go together). The stop is recorded from inside the page before it goes away.
+  const stopSeen=[];await site.kimi.exposeFunction('__yzStopSeen',()=>stopSeen.push(true));
+  await site.kimi.evaluate(()=>{const s=document.querySelector('#stop');new MutationObserver(()=>{if(s.hidden)window.__yzStopSeen();}).observe(s,{attributes:true});});
   await row('Kimi').locator('[data-op="replace"]').click();await page.waitForSelector('#dialog[open] [data-pick]');
   assert.match(await page.locator('#dialog-body').innerText(),/立刻接手本轮/);
   await page.locator('#dialog [data-pick="doubao"]').click();
   await until(async()=>(await state()).session.members.join()==='deepseek,doubao','members swapped in place');
   const replaced=(await jobs()).find(j=>j.provider==='kimi');assert.equal(replaced.status,'skipped');assert.equal(replaced.replacedBy,'doubao');
-  assert(await site.kimi.evaluate(()=>document.querySelector('#stop').hidden),'the replaced member was asked to stop answering');
+  await until(()=>site.kimi.isClosed(),'the replaced member page closes');assert(stopSeen.length>0,'the replaced member was asked to stop answering before its page closed');
   await adopt('doubao');
   // The newcomer's first send may hit the page before its fixture loaded; 重新发送 is the escape hatch for exactly that.
   await until(async()=>!['queued','preparing'].includes((await current('doubao')).status),'doubao attempted',20000);

@@ -76,7 +76,6 @@ try{
   const windowState=()=>panel.evaluate(async id=>(await chrome.windows.get(id)).state,windowId);
   const command=(action,data={})=>panel.evaluate(async({action,data})=>{const response=await chrome.runtime.sendMessage({type:'YZ_COMMAND',action,...data});if(!response.ok)throw new Error(response.error);return response;},{action,data});
   await command('preferences',{layout:'c'});
-  await panel.locator('#connect').dispatchEvent('click');
   await panel.waitForFunction(()=>document.querySelectorAll('.member-chip.connected').length===3,undefined,{polling:100});
   let state=await command('state');const bindings=state.session.bindings,tabs={};evidence.bindings=bindings;
   for(const provider of DEFAULT_MEMBERS){

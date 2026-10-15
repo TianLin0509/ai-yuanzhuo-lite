@@ -1,4 +1,4 @@
-// Workflow (serial) rounds, recovery after a failed member is skipped, and the connect-first hint,
+// Workflow (serial) rounds, recovery after a failed member is skipped, member pages opening by themselves,
 // driven through the real extension UI with fixture provider pages (not live websites).
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -18,38 +18,38 @@ async function until(fn,description,timeout=30000){const start=Date.now();let la
 try{
   await context.route('https://**/*',route=>{const provider=providerFor(route.request().url());return provider?route.fulfill({contentType:'text/html',body:fixture(provider)}):route.abort();});
   let worker=context.serviceWorkers()[0];if(!worker)worker=await context.waitForEvent('serviceworker');const base=`chrome-extension://${new URL(worker.url()).host}/`;
-  const page=await context.newPage();await page.goto(base+'main.html');await page.waitForSelector('#base-time');
+  const page=await context.newPage();const before=new Set(context.pages());await page.goto(base+'main.html');await page.waitForSelector('#base-time');
   const state=()=>page.evaluate(async()=>{const windowId=(await chrome.windows.getCurrent()).id;const r=await chrome.runtime.sendMessage({type:'YZ_COMMAND',windowId,action:'state'});if(!r?.ok)throw Error(r?.error);return r;});
   const latestJobs=async()=>(await state()).session.rounds.at(-1).jobs;
   // The panel refreshes a moment after the worker; until then its button still reads “停止本轮”.
   const sendReady=()=>until(async()=>(await page.locator('#send-label').innerText())!=='停止本轮','send button ready');
 
-  // 1. Asking before any member page is open suggests connecting first.
+  // 1. Loading the roundtable opens one page per member by itself: there is no connect step to remember.
   assert.equal(await page.locator('[data-kind="ask"]').count(),0,'同题提问 is gone; 独立迭代 covers it');
-  await page.locator('#prompt').fill('先不连接就提问');await page.locator('#send').click();
-  await page.waitForSelector('#guide-connect');assert.match(await page.locator('#dialog-body').innerText(),/还没有连接网页/);
-  assert.equal((await state()).session.rounds.length,0,'nothing is sent while the hint is open');
-  const before=new Set(context.pages());await page.locator('#guide-connect').click();
-  await until(async()=>Object.values((await state()).session.bindings).filter(b=>b.tabId).length===3,'members connected from the hint');
+  assert.equal(await page.locator('#connect').count(),0,'no connect button');
+  await until(async()=>Object.values((await state()).session.bindings).filter(b=>b.tabId).length===3,'member pages opened on load');
+  assert.equal((await state()).session.rounds.length,0,'nothing is sent');
   let opened;await until(()=>(opened=context.pages().filter(p=>!before.has(p))).length===3,'three member pages');
   // connect opens members in order; load each one's fixture into the tab the extension owns.
   const members=(await state()).session.members,site={};
   for(const [i,p] of members.entries()){site[p]=opened[i];await opened[i].goto(PROVIDERS[p].url);await opened[i].waitForFunction(()=>!!globalThis.__fixture);}
-  checks.push('Sending with unconnected members first offers to connect; nothing is sent meanwhile');
+  checks.push('Loading the roundtable opens one page per member by itself; nothing is sent');
 
-  // Connecting checks every member page (read-only): a quota notice shows on that member before anything is sent.
-  await site.kimi.evaluate(()=>document.body.insertAdjacentHTML('beforeend','<div class="modal-container">Your free quota is used up. Refreshes at 10-19.</div>'));
-  await page.locator('#connect').click();
-  await until(async()=>(await state()).session.bindings.kimi?.health==='quota','kimi quota found by the connect check');
+  // Every member page is checked (read-only) whenever it finishes loading: a quota notice shows on that member before
+  // anything is sent. The fixture shows the notice while a flag is set, as the site does until the quota refreshes.
+  await site.kimi.addInitScript(()=>{if(sessionStorage.getItem('quota'))document.addEventListener('DOMContentLoaded',()=>document.body.insertAdjacentHTML('beforeend','<div class="modal-container">Your free quota is used up. Refreshes at 10-19.</div>'));});
+  for(const p of ['deepseek','kimi','doubao'])await until(async()=>(await state()).session.bindings[p]?.health==='ok',p+' checked after loading');
+  await site.kimi.evaluate(()=>sessionStorage.setItem('quota','1'));await site.kimi.reload();
+  await until(async()=>(await state()).session.bindings.kimi?.health==='quota','kimi quota found when its page loaded');
   await until(async()=>(await page.locator('.member-row',{hasText:'Kimi'}).innerText()).includes('额度已用完'),'quota shown on the member row');
   assert(await page.locator('.member-row .recovery [data-provider="kimi"][data-op="open"]').isVisible(),'a direct way to the page');
   for(const p of ['deepseek','doubao'])assert.equal((await state()).session.bindings[p].health,'ok',p+' page is ready');
   await page.locator('#prompt').fill('体检提示');await page.locator('#send').click();
   await page.waitForSelector('#guide-fix');assert.match(await page.locator('#dialog-body').innerText(),/Kimi（额度已用完）/);
   assert.equal((await state()).session.rounds.length,0,'nothing is sent while the hint is open');await page.locator('#dialog-close').click();
-  await site.kimi.evaluate(()=>document.querySelector('.modal-container').remove());await page.locator('#connect').click();
-  await until(async()=>(await state()).session.bindings.kimi?.health==='ok','kimi ready again after re-checking');
-  checks.push('Connecting checks each member page; quota / sign-in / verification show on the row and before sending');
+  await site.kimi.evaluate(()=>sessionStorage.removeItem('quota'));await site.kimi.reload();await site.kimi.waitForFunction(()=>!!globalThis.__fixture);
+  await until(async()=>(await state()).session.bindings.kimi?.health==='ok','kimi ready again once its page reloads, without any button');
+  checks.push('Each member page is checked when it loads; quota / sign-in / verification show on the row and before sending, and clear on reload');
 
   // 2. Workflow in a custom order: each member sees the question plus every earlier answer.
   await page.locator('[data-kind="relay"]').click();await page.waitForSelector('#relay-options:not([hidden])');

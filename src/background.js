@@ -1,4 +1,4 @@
-import {PROVIDERS,DEFAULT_MEMBERS,MAX_SESSIONS,ACTIVE,id,newSession,validMembers,makeRound,composePrompts,busy,providerFor,cleanUrl,sameConversation,acceptEvent,looksLikePlaceholder,validateTemplate,relayNext,relayPrompt,replaceMember,forNewcomer} from './core.js';
+import {PROVIDERS,DEFAULT_MEMBERS,MAX_SESSIONS,ACTIVE,id,newSession,validMembers,makeRound,composePrompts,busy,providerFor,cleanUrl,sameConversation,acceptEvent,looksLikePlaceholder,validateTemplate,relayNext,relayPrompt,replaceMember,forNewcomer,jobFor} from './core.js';
 import {createBackgroundSupport} from './background-support.js';
 import {createWorkspaces} from './workspaces.js';
 import {findUpdate,compareVersions} from './update-core.js';
@@ -92,12 +92,19 @@ async function followStartedChat(ref){try{
   await mutate(ref.sessionId,x=>{if(x.bindings[job.provider]?.tabId===tab.id&&x.bindings[job.provider].url===binding.url)x.bindings[job.provider]={tabId:tab.id,url:here};});
 }catch(error){console.info('[AI圆桌lite] 未能记录新对话地址',error.message);}}
 function fellBack(provider,saved,here){const pattern=PROVIDERS[provider].conversation;try{return !!pattern&&providerFor(here)===provider&&pattern.test(new URL(saved).pathname)&&!pattern.test(new URL(here).pathname);}catch{return false;}}
-async function connection(sessionId,provider,{focus=false,verifyConversation=false,rereadJob=null}={}){
+// One member's page is found or opened by one call at a time: two pages asking at once must not open it twice.
+const memberLocks=new Map();
+function connection(sessionId,provider,options){const key=sessionId+'|'+provider,previous=memberLocks.get(key)||Promise.resolve(),next=previous.catch(()=>{}).then(()=>memberPage(sessionId,provider,options));memberLocks.set(key,next);next.finally(()=>{if(memberLocks.get(key)===next)memberLocks.delete(key);}).catch(()=>{});return next;}
+async function memberPage(sessionId,provider,{focus=false,verifyConversation=false,rereadJob=null}={}){
   const ownerWindow=await workspaces.requireWindow(sessionId);
   const session=await loadSession(sessionId);let tab=null,binding=session.bindings[provider];
   if(binding?.tabId){try{tab=await chrome.tabs.get(binding.tabId);}catch(error){if(!/No tab|Invalid tab/i.test(error.message))throw error;}}
-  if(tab)await workspaces.validateTab(sessionId,tab);
-  if(tab&&providerFor(tab.url||tab.pendingUrl)!==provider)throw new Error(`${PROVIDERS[provider].name} 的标签页已离开对应网站，请重新连接。`);
+  // A page dragged to another window or taken to another site is no longer this member's (it is left alone).
+  // Between rounds the member simply gets a fresh page; during a round that would change where the answer is read.
+  if(tab&&(tab.windowId!==ownerWindow||providerFor(tab.url||tab.pendingUrl)!==provider)){
+    if(busy(session))throw new Error(tab.windowId!==ownerWindow?'成员标签页已移到其他窗口。请移回本圆桌窗口，或停止本轮后点成员名字重新打开。':`${PROVIDERS[provider].name} 的标签页已离开对应网站。请停止本轮后点成员名字重新打开。`);
+    await mutate(sessionId,s=>{if(s.bindings[provider]?.tabId===tab.id)s.bindings[provider]={url:binding.url};});tab=null;binding={url:binding.url};
+  }
   if(tab&&binding?.url&&verifyConversation&&!sameConversation(provider,tab.url||tab.pendingUrl,binding.url)&&!provisionalRecovery(provider,binding,tab.url||tab.pendingUrl,rereadJob)){
     // A saved chat the site could not load (signed out, deleted) falls back to its new-chat page. Nothing is sent;
     // the member continues in the new chat only after the user presses retry, knowing the context is gone.
@@ -119,6 +126,8 @@ async function dispatch(ref){
     let job=await readJob(ref);if(!job||!ACTIVE.has(job.status))return;
     ref={...ref,requestId:job.requestId};
     await updateJob(ref,j=>{if(ACTIVE.has(j.status)){j.status='preparing';j.startedAt=Date.now();}});
+    // The member's page may have been closed meanwhile (seat skipped, member out): then do not open a new one.
+    if(!ACTIVE.has((await readJob(ref))?.status))return;
     const tab=await restoreIfDiscarded(await connection(ref.sessionId,job.provider,{verifyConversation:true}));await waitForTab(tab.id);
     job=await readJob(ref);if(!job||!ACTIVE.has(job.status))return;
     await updateJob(ref,j=>{j.tabId=tab.id;});await support.acquire(tab.id,job.requestId,job.provider);
@@ -219,13 +228,55 @@ const windowSwitches=new Map();
 function perWindow(windowId,fn){const previous=windowSwitches.get(windowId)||Promise.resolve(),next=previous.catch(()=>{}).then(fn);windowSwitches.set(windowId,next);next.finally(()=>{if(windowSwitches.get(windowId)===next)windowSwitches.delete(windowId);}).catch(()=>{});return next;}
 async function openMembers(sessionId){const s=await loadSession(sessionId);for(const provider of s.members)await connection(sessionId,provider);checkLater(sessionId);}
 // Right after connecting, find out which pages need the user (sign in, verification, quota) before anything is sent.
-async function checkMembers(sessionId){
+async function checkMembers(sessionId,only=null){
   const s=await loadSession(sessionId);
-  await Promise.all(s.members.map(async provider=>{const tabId=s.bindings[provider]?.tabId;if(!tabId)return;let health='';
+  await Promise.all(s.members.filter(p=>!only||only.includes(p)).map(async provider=>{const tabId=s.bindings[provider]?.tabId;if(!tabId)return;let health='';
     try{await restoreIfDiscarded(await chrome.tabs.get(tabId));await waitForTab(tabId);await inject(tabId,provider);health=(await pageMessage(tabId,{type:'YZ_PROBE',provider})).state;}catch(error){console.info('[AI圆桌lite] 成员网页检查未完成',provider,error.message);return;}
     await mutate(sessionId,x=>{const b=x.bindings[provider];if(b?.tabId===tabId)x.bindings[provider]={...b,health,checkedAt:Date.now()};});}));
 }
 const checkLater=sessionId=>{checkMembers(sessionId).catch(error=>console.info('[AI圆桌lite] 成员网页检查失败',error.message));};
+// Members and their pages go together, as in AI-Arena: adding a member opens its page, taking one out closes the page
+// this roundtable opened for it, and the user closing that page takes the member out (memberPageClosed).
+async function closeMemberPages(sessionId,providers){
+  if(!providers.length)return;
+  const windowId=await workspaces.owner(sessionId),s=await loadSession(sessionId),closing=[];
+  for(const p of providers){const b=s.bindings[p];if(!b?.tabId||!windowId)continue;try{const tab=await chrome.tabs.get(b.tabId),address=tab.url||tab.pendingUrl||'';if(tab.windowId===windowId&&(providerFor(address)===p||/^(about:blank)?$/.test(address)))closing.push(tab.id);}catch(error){if(!/No tab|Invalid tab/i.test(error.message))throw error;}}
+  // Unbind first, so closing the page does not come back as "the user closed it". The saved chat is kept for a re-add.
+  await mutate(sessionId,x=>{for(const p of providers)if(x.bindings[p]?.tabId)x.bindings[p]={url:x.bindings[p].url};});
+  if(closing.length)await chrome.tabs.remove(closing);
+}
+async function syncMemberPages(sessionId,before,after){
+  if(!await workspaces.owner(sessionId))return;
+  const added=after.filter(p=>!before.includes(p)),removed=before.filter(p=>!after.includes(p));
+  try{for(const p of added)await connection(sessionId,p);}catch(error){throw new Error(`成员已更新，但网页没有打开：${error.message}。点成员名字可以重新打开。`);}
+  await closeMemberPages(sessionId,removed);if(added.length)checkLater(sessionId);
+}
+// The user closed a member's page: the member leaves, like 移出 (its answers stay in the record). Its unfinished seat in
+// the latest round is skipped so discussion and workflow do not wait for a page that is gone. At least two members
+// stay: a member kept that way shows its page as not open, and sending or clicking its name opens it again.
+async function memberPageClosed(tabId,windowId){
+  const sessionId=await workspaces.ownerForWindow(windowId);if(!sessionId)return;
+  await perWindow(windowId,async()=>{
+    const result=await mutate(sessionId,s=>{
+      const provider=s.members.find(p=>s.bindings[p]?.tabId===tabId);if(!provider)return null;
+      s.bindings[provider]={url:s.bindings[provider].url};
+      const round=s.rounds.at(-1),job=jobFor(round,provider),removed=s.members.length>2;
+      // A running or queued seat is skipped. A failed or unconfirmed one is left as it is unless the member leaves, since
+      // with no row left it would block discussion; its earlier note is kept.
+      const open=!!job&&(ACTIVE.has(job.status)||job.status==='waiting'||removed&&['error','attention'].includes(job.status));
+      if(open)Object.assign(job,{status:'skipped',error:'网页已关闭，本轮不再等它。'+(job.error?'（之前：'+job.error+'）':''),updatedAt:Date.now()});
+      if(removed)s.members=s.members.filter(p=>p!==provider);
+      return {removed,members:[...s.members],job:open?{roundId:round.id,requestId:job.requestId,tabId:job.tabId,relay:round.kind==='relay'}:null};
+    });
+    if(!result)return;
+    if(result.removed){preferredMembers=result.members;await chrome.storage.local.set({[MEMBERS]:preferredMembers});}
+    if(result.job){if(result.job.tabId)try{await support.release(result.job.tabId,result.job.requestId);}catch(error){console.info('[AI圆桌lite] 已关闭网页的后台支持释放未确认',error.message);}if(result.job.relay)advanceLater(sessionId,result.job.roundId);await alarm();}
+  });
+}
+// A member page that finishes loading (after signing in, a verification, a new chat) is checked again between rounds,
+// so its row never keeps a stale "需要登录". Read-only: nothing is typed or sent.
+const rechecks=new Map();
+async function recheckPage(tabId,windowId){const sessionId=await workspaces.ownerForWindow(windowId);if(!sessionId)return;const s=await loadSession(sessionId),provider=s.members.find(p=>s.bindings[p]?.tabId===tabId);if(provider&&!busy(s))await checkMembers(sessionId,[provider]);}
 // After reopening saved conversations, check that each site really stayed there. A site that cannot load the
 // chat (signed out, chat deleted) sends the tab to a new chat; say so on the member row and continue there.
 async function verifyRecovered(sessionId){
@@ -275,20 +326,30 @@ async function command(message){
       // Presets are shared by every roundtable; null restores the built-in text.
       await run(async()=>{const all=await templates();if(message.text===null)delete all[message.key];else all[message.key]=validateTemplate(message.key,message.text);await chrome.storage.local.set({[TEMPLATES]:all});});return state();
     }
-    case 'close-here':{requireWindowId(message);await perWindow(message.windowId,()=>switchWindow(message.windowId,null));return state();}
+    // Closing leaves an empty roundtable in the window; its record page must not open member pages again by itself.
+    case 'close-here':{requireWindowId(message);await perWindow(message.windowId,async()=>{const empty=await switchWindow(message.windowId,null);await chrome.storage.session.set({['arena.quiet.'+empty]:true});});return state();}
     case 'new-here':{requireWindowId(message);await perWindow(message.windowId,async()=>openMembers(await switchWindow(message.windowId,null)));return state();}
     case 'open-here':{requireWindowId(message);const holder=await workspaces.owner(message.sessionId);if(holder&&holder!==message.windowId){const opened=await workspaces.main(message.sessionId);return {...await state(),opened};}await perWindow(message.windowId,async()=>openMembers(await switchWindow(message.windowId,message.sessionId)));verifyLater(message.sessionId);return state();}
     case 'new':{const session=await createSession(message.members||[...preferredMembers]);const opened=await workspaces.main(session.id);for(const provider of session.members)await connection(session.id,provider);return {...await state(),opened};}
     case 'select':{await loadSession(message.sessionId);const reopening=!await workspaces.owner(message.sessionId);const opened=await workspaces.main(message.sessionId);const s=await loadSession(message.sessionId);for(const p of s.members)await connection(s.id,p);if(reopening)verifyLater(s.id);return {...await state(),opened};}
-    case 'members':{await mutate(message.sessionId,s=>{if(busy(s))throw new Error('请先等待或停止本轮，再更改成员。');newSession(message.members);s.members=message.members;});preferredMembers=[...message.members];await chrome.storage.local.set({[MEMBERS]:preferredMembers});return state();}
+    case 'members':{const before=await mutate(message.sessionId,s=>{if(busy(s))throw new Error('请先等待或停止本轮，再更改成员。');newSession(message.members);const before=s.members;s.members=message.members;return before;});preferredMembers=[...message.members];await chrome.storage.local.set({[MEMBERS]:preferredMembers});await syncMemberPages(message.sessionId,before,message.members);return state();}
     case 'replace':{
       const all=await templates(),result=await mutate(message.sessionId,s=>{const r=replaceMember(s,message.provider,message.replacement,all);return {roundId:s.rounds.at(-1)?.id,kind:s.rounds.at(-1)?.kind,job:r.job&&r.job.id,previous:r.previous,members:[...s.members]};});
       preferredMembers=result.members;await chrome.storage.local.set({[MEMBERS]:preferredMembers});
       if(result.previous)await detach(result.previous,{stopGeneration:true});
+      // The replaced member's page closes; a replacement taking over this round opens its page as it is sent.
+      await syncMemberPages(message.sessionId,[message.provider],result.job?[]:[message.replacement]);
       await alarm();if(result.job)await dispatch({sessionId:message.sessionId,roundId:result.roundId,jobId:result.job});
       if(result.kind==='relay')advanceLater(message.sessionId,result.roundId);await alarm();return state();
     }
-    case 'connect':{const s=await loadSession(message.sessionId);for(const provider of s.members){const binding=s.bindings[provider],windowId=await workspaces.owner(s.id);if(binding?.tabId&&windowId){let tab;try{tab=await chrome.tabs.get(binding.tabId);}catch(e){if(!/No tab|Invalid tab/i.test(e.message))throw e;}if(tab&&(tab.windowId!==windowId||providerFor(tab.url||tab.pendingUrl)!==provider)){if(busy(s))throw new Error('请先停止本轮，再重新连接已移动的成员。');await mutate(s.id,copy=>{copy.bindings[provider]={url:binding.url};});}}await connection(s.id,provider);}checkLater(s.id);return state();}
+    // Opens every member page not open yet (the panel asks once when it loads). A page moved away is replaced between rounds.
+    // The panel's request is decided inside the window queue: 关闭圆桌 reloads the record page while it is still closing
+    // pages (a page asking "leave site?" holds it up), and the empty roundtable it leaves must stay without pages.
+    case 'connect':{
+      const open=async()=>{const sessionId=Number.isInteger(message.windowId)?await workspaces.ownerForWindow(message.windowId):message.sessionId;if(!sessionId)return;
+        if(message.auto&&(await chrome.storage.session.get('arena.quiet.'+sessionId))['arena.quiet.'+sessionId])return;await openMembers(sessionId);};
+      await (Number.isInteger(message.windowId)?perWindow(message.windowId,open):open());return state();
+    }
     case 'open-answer':{const s=await loadSession(message.sessionId),r=s.rounds.find(r=>r.id===message.roundId),j=r?.jobs.find(j=>j.id===message.jobId);if(!j?.url||providerFor(j.url)!==j.provider)throw new Error('这份记录尚无可核对的原网页地址。');const windowId=await workspaces.owner(s.id),tabs=await chrome.tabs.query(windowId?{windowId}:{});const tab=tabs.find(t=>cleanUrl(t.url)===cleanUrl(j.url));if(tab)await chrome.tabs.update(tab.id,{active:true});else await chrome.tabs.create({...(windowId?{windowId}:{}),url:j.url,active:true});return state();}
     case 'open':{if(!PROVIDERS[message.provider])throw new Error('未知成员。');const session=await loadSession(message.sessionId);const bound=session.bindings[message.provider];const tab=await connection(session.id,message.provider,{focus:true});if(bound?.url&&cleanUrl(tab.url)!==cleanUrl(bound.url))await chrome.tabs.update(tab.id,{url:bound.url});return state();}
     case 'start':{
@@ -366,6 +427,9 @@ chrome.runtime.onConnect?.addListener(port=>{
 });
 chrome.sidePanel.onOpened?.addListener(({windowId})=>{ready.then(()=>{closedPanels.delete(windowId);nativePanelState.set(windowId,true);return publishPanel(windowId);}).catch(e=>console.error('[AI圆桌lite] 侧栏打开状态保存失败',e));});
 chrome.sidePanel.onClosed?.addListener(({windowId})=>{ready.then(()=>{closedPanels.add(windowId);nativePanelState.set(windowId,false);return publishPanel(windowId);}).catch(e=>console.error('[AI圆桌lite] 侧栏关闭状态保存失败',e));});
+// Closing the whole window keeps its members (handled below); closing one member page takes that member out.
+chrome.tabs.onRemoved?.addListener((tabId,{windowId,isWindowClosing})=>{if(isWindowClosing)return;ready.then(()=>memberPageClosed(tabId,windowId)).catch(e=>console.error('[AI圆桌lite] 成员网页关闭处理失败',e));});
+chrome.tabs.onUpdated?.addListener((tabId,change,tab)=>{if(change.status!=='complete')return;clearTimeout(rechecks.get(tabId));rechecks.set(tabId,setTimeout(()=>{rechecks.delete(tabId);ready.then(()=>recheckPage(tabId,tab.windowId)).catch(e=>console.info('[AI圆桌lite] 成员网页复查失败',e.message));},1500));});
 chrome.windows.onRemoved?.addListener(windowId=>{ready.then(async()=>{const sessionId=await workspaces.ownerForWindow(windowId);await workspaces.forget(windowId);if(sessionId){const s=await loadSession(sessionId);for(const r of s.rounds)if(r.jobs.some(j=>j.status==='waiting'))await stopWaiting(sessionId,r.id);for(const r of (await loadSession(sessionId)).rounds)for(const j of r.jobs)if(ACTIVE.has(j.status))await stopJob({sessionId,roundId:r.id,jobId:j.id});await alarm();await discardIfEmpty(sessionId);}await chrome.storage.session.remove('arena.panel.'+windowId);}).catch(e=>console.error('[AI圆桌lite] 关闭窗口清理失败',e));});
 chrome.alarms.onAlarm.addListener(event=>{if(event.name===UPDATE_ALARM){checkForUpdate().catch(error=>console.info('[AI圆桌lite] 检查更新失败',error.message));return;}if(event.name===ALARM)ready.then(recover).catch(error=>console.error('[AI圆桌lite] 恢复失败',error));});
 chrome.runtime.onInstalled.addListener(details=>{ready.then(()=>details.reason==='update'?workspaces.restoreAfterReload():null).catch(error=>console.error('[AI圆桌lite] 初始化失败',error));});
