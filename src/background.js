@@ -1,6 +1,7 @@
 import {PROVIDERS,DEFAULT_MEMBERS,MAX_SESSIONS,ACTIVE,id,newSession,validMembers,makeRound,composePrompts,busy,providerFor,cleanUrl,sameConversation,acceptEvent,looksLikePlaceholder,validateTemplate,relayNext,relayPrompt,replaceMember,forNewcomer} from './core.js';
 import {createBackgroundSupport} from './background-support.js';
 import {createWorkspaces} from './workspaces.js';
+import {findUpdate,compareVersions} from './update-core.js';
 
 const INDEX='arena.index',PREFIX='arena.session.',ALARM='arena-active-recovery',MEMBERS='arena.members',TEMPLATES='arena.templates';
 let index,queue=Promise.resolve(),supportWarning='';
@@ -8,6 +9,15 @@ let index,queue=Promise.resolve(),supportWarning='';
 const readBuild=async()=>{try{const r=await fetch(chrome.runtime.getURL('build.json'),{cache:'no-store'});return r.ok?await r.json():null;}catch{return null;}};
 const runningBuild=readBuild();let diskBuild={at:0,value:null};
 async function buildInfo(){if(Date.now()-diskBuild.at>15000)diskBuild={at:Date.now(),value:await readBuild()};const running=await runningBuild,disk=diskBuild.value;return {running:running?.commit||'',available:disk&&running&&disk.builtAt!==running.builtAt?disk.commit:''};}const sessions=new Map(),nativePanelState=new Map();
+// One-click update: check the release sources every 6 hours (and when asked); the pages read the summary from storage.
+const UPDATE='arena.update',UPDATE_ALARM='arena-update-check';
+async function checkForUpdate(){
+  const current=chrome.runtime.getManifest().version;let found;
+  try{found=await findUpdate();}catch(error){found={manifest:null,results:[{name:'检查',ok:false,error:error.message}]};}
+  const m=found.manifest,update={checkedAt:Date.now(),current,results:found.results,latest:m?{version:m.version,notes:m.notes,size:m.bundle.size,publishedAt:m.publishedAt||'',source:found.source.name}:null,available:!!m&&compareVersions(m.version,current)>0};
+  await chrome.storage.local.set({[UPDATE]:update});return update;
+}
+chrome.alarms.get(UPDATE_ALARM).then(alarm=>{if(!alarm)return chrome.alarms.create(UPDATE_ALARM,{delayInMinutes:1,periodInMinutes:360});}).catch(error=>console.info('[AI圆桌lite] 更新检查定时器未建立',error.message));
 const run=fn=>{const operation=queue.then(fn);queue=operation.catch(()=>{});return operation;};
 async function loadSession(sessionId){if(!sessions.has(sessionId)){const data=await chrome.storage.local.get(PREFIX+sessionId);if(!data[PREFIX+sessionId])throw new Error('会话不存在，请刷新历史列表。');sessions.set(sessionId,data[PREFIX+sessionId]);}return sessions.get(sessionId);}
 async function save(session){session.updatedAt=Date.now();const next=structuredClone(index);const meta=summarize(session);next.sessions=next.sessions.filter(s=>s.id!==session.id);next.sessions.unshift(meta);await chrome.storage.local.set({[PREFIX+session.id]:session,[INDEX]:next});index=next;sessions.set(session.id,session);}
@@ -246,6 +256,7 @@ async function command(message){
   const templates=async()=>(await chrome.storage.local.get(TEMPLATES))[TEMPLATES]||{};
   switch(message.action){
     case 'state':return state();
+    case 'checkUpdate':return {update:await checkForUpdate()};
     case 'update':{
       // Reload in place so the extension ID, history and window ownership survive (see restoreAfterReload).
       for(const meta of index.sessions)if(busy(await loadSession(meta.id)))throw new Error('还有进行中的圆桌，请等本轮结束或停止后再更新。');
@@ -352,7 +363,7 @@ chrome.runtime.onConnect?.addListener(port=>{
 chrome.sidePanel.onOpened?.addListener(({windowId})=>{ready.then(()=>{closedPanels.delete(windowId);nativePanelState.set(windowId,true);return publishPanel(windowId);}).catch(e=>console.error('[AI圆桌lite] 侧栏打开状态保存失败',e));});
 chrome.sidePanel.onClosed?.addListener(({windowId})=>{ready.then(()=>{closedPanels.add(windowId);nativePanelState.set(windowId,false);return publishPanel(windowId);}).catch(e=>console.error('[AI圆桌lite] 侧栏关闭状态保存失败',e));});
 chrome.windows.onRemoved?.addListener(windowId=>{ready.then(async()=>{const sessionId=await workspaces.ownerForWindow(windowId);await workspaces.forget(windowId);if(sessionId){const s=await loadSession(sessionId);for(const r of s.rounds)if(r.jobs.some(j=>j.status==='waiting'))await stopWaiting(sessionId,r.id);for(const r of (await loadSession(sessionId)).rounds)for(const j of r.jobs)if(ACTIVE.has(j.status))await stopJob({sessionId,roundId:r.id,jobId:j.id});await alarm();await discardIfEmpty(sessionId);}await chrome.storage.session.remove('arena.panel.'+windowId);}).catch(e=>console.error('[AI圆桌lite] 关闭窗口清理失败',e));});
-chrome.alarms.onAlarm.addListener(event=>{if(event.name===ALARM)ready.then(recover).catch(error=>console.error('[AI圆桌lite] 恢复失败',error));});
+chrome.alarms.onAlarm.addListener(event=>{if(event.name===UPDATE_ALARM){checkForUpdate().catch(error=>console.info('[AI圆桌lite] 检查更新失败',error.message));return;}if(event.name===ALARM)ready.then(recover).catch(error=>console.error('[AI圆桌lite] 恢复失败',error));});
 chrome.runtime.onInstalled.addListener(details=>{ready.then(()=>details.reason==='update'?workspaces.restoreAfterReload():null).catch(error=>console.error('[AI圆桌lite] 初始化失败',error));});
 chrome.runtime.onStartup.addListener(()=>{ready.then(recover).catch(error=>console.error('[AI圆桌lite] 启动恢复失败',error));});
 ready.then(alarm).catch(error=>console.error('[AI圆桌lite] 后台支持恢复失败',error));

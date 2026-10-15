@@ -5,6 +5,7 @@
 - 时光机按原提问时间回看。历史选择不改变下一轮基准；旧内容须显式引用。主界面只有阅读动作，侧栏关闭后主 Tab 提供同一草稿的操作区。草稿 revision、恢复备份、窗口关闭/重开和跨窗口隔离属于必要回归。
 - 用户已批准复用旧 AI-Arena 的后台调试方案。仅对本轮绑定标签页按请求使用 chrome.debugger 的生命周期唤醒和焦点模拟，启用失败必须明确报错；完成、停止、异常或离开站点后释放，恢复原 autoDiscardable 值。禁止扫描并常驻接管无关网页。
 - 不注入 MAIN world 补丁，不改写网页的全局定时器、rAF、visibility/hasFocus 属性；不加 DNR、远程代码、PPT、token 仪表盘。Chrome 原生 CDP 焦点模拟是上一条的明确例外。
+- 一键更新是「不加远程代码」的明确例外（2026-10-15 用户批准）：只在用户点击「立即更新」时，下载经发布私钥签名的版本，逐个文件核对后写回用户授权的扩展文件夹并原地重载；不在运行时执行下载的代码，签名不通过一律不写。私钥在 `C:\VibeData\Secrets\ai-yuanzhuo-lite`，不进仓库。更新源依次为 GitHub Release（仓库私有，需该 Chrome 登录 GitHub）与备用服务器 me.lt-stockpartner.tech/pptutor/yuanzhuo-lite。
 - 只向用户选中的网页注入。发送不确定时不能自动重发；必须区分重试发送、重新提取与用户确认完成。禁止静默截断正文和上下文。
 - 初始仓库引导提交完成后启用 project-prep 钩子。后续主目录只做审查合并；任务使用独立 worktree 与独立 npm ci，禁止依赖 junction。读 `.agents/AUTHOR.md`、`.agents/MERGER.md`、`.agents/TESTING.md`。
 - 用户 Chrome 固定加载 `C:\VibeData\Extensions\AI-Yuanzhuo-Lite`；每次合并后 afterMerge 自动执行 `npm run install:local` 同步到该目录，扩展里出现“更新到新版本”，点一下原地重载，记录和窗口保留。这不是发布，不推送；版本号按下面的规则随交付抬升。
@@ -12,3 +13,4 @@
 - 不关闭用户浏览器或生产 AI Hub；浏览器 Profile 在 C:\VibeData\BrowserProfiles\AI-Yuanzhuo-Lite，测试浏览器只使用自身记录的 PID/端口。
 - 测试输出放 artifacts/，文件名带日期与席位。不得提交 Profile、Cookie、登录截图、用户对话或 .env。
 - AGENTS.md、CLAUDE.md、GEMINI.md 保持一致。每次交付给用户的合并都抬版本号（任务分支同时改 src/manifest.json、package.json 与 package-lock.json；新功能升次版本、修复升修订号），界面显示版本；推送 GitHub 与对外发布仍需用户授权（2026-09-27 用户要求）。
+- 发布：合并到 main 并推送后，在主目录执行 `npm run release -- --publish --mirror`（需 ECS_PWD）。它会构建、签名、自检，生成手动安装 zip，创建 GitHub Release 并同步备用服务器、从公网核对。每版须先写 `docs/releases/<版本>.md`（`---` 之前是更新弹窗里显示的说明）。

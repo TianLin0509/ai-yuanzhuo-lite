@@ -1,4 +1,5 @@
 import {PROVIDERS,MAX_MEMBERS,DISCUSSION_STYLES,ACTIVE,LABELS,KIND_NAMES,busy,toMarkdown,presetView,relayOrder,jobFor,canTakeOver} from './core.js';
+import {initUpdates,remoteUpdate,openUpdates} from './update-ui.js';
 import {escapeHtml,fmtTime,fmtDateGroup,fmtRelative,historyGroup,renderMarkdown,roundMatches} from './view.js';
 const $=s=>document.querySelector(s),$$=s=>[...document.querySelectorAll(s)],esc=escapeHtml;
 const main=document.body.dataset.surface==='main',kinds=KIND_NAMES,modes={iterate:'独立迭代',relay:'工作流',discuss:'观点讨论',inspire:'互相激发',summary:'队长总结'};
@@ -46,7 +47,8 @@ async function refresh(){
 // A newer build in the installed folder: offer an in-place reload (history and windows are kept).
 // The version is always visible so the user can tell at a glance which build is running.
 function renderVersion(){const v='v'+chrome.runtime.getManifest().version,build=model?.build?.running;for(const el of $$('.app-version')){el.textContent=v;el.title=`AI圆桌lite ${v}${build?' · 构建 '+build:''}`;}}
-function renderUpdate(){renderVersion();const b=$('#update');if(!b)return;const available=model.build?.available;b.hidden=!available;if(available){b.textContent='更新到新版本';b.title=`当前 ${model.build.running}，可更新到 ${available}。本轮进行中时不能更新。`;b.disabled=busy(model.session);}}
+// A newer release online (one-click update) shows the same button; it opens the update dialog.
+function renderUpdate(){renderVersion();const b=$('#update');if(!b)return;const available=model?.build?.available,online=!available&&remoteUpdate();b.hidden=!available&&!online;b.dataset.kind=available?'disk':online?'online':'';if(available){b.textContent='更新到新版本';b.title=`当前 ${model.build.running}，可更新到 ${available}。本轮进行中时不能更新。`;b.disabled=busy(model.session);}else if(online){b.textContent='可更新';b.title=`新版本 v${online.version}：点开查看更新内容并一键更新`;b.disabled=false;}for(const el of $$('.app-version'))el.classList.toggle('has-update',!!online);}
 function persistReader(){chrome.storage.local.set({[readerKey]:reader}).catch(e=>error('阅读位置保存失败：'+e.message));}
 const draftBackupKey=()=> 'arena.pending-draft.'+model.session.id;
 async function recoverDraft(){
@@ -235,7 +237,8 @@ if(main){
   $('#export').onclick=()=>download();$('#open-sidepanel').onclick=()=>chrome.sidePanel.open({windowId}).catch(e=>error('侧栏打开失败：'+e.message));
 }else $('#open-main').onclick=()=>act('main');
 $('#new').onclick=newRoundtable;$('#history').onclick=historyList;$('#close-roundtable').onclick=closeRoundtable;
-$('#update').onclick=async()=>{const r=await act('update');if(r?.reloading)notice('正在更新，稍后会自动重新打开圆桌记录。');};
+$('#update').onclick=async()=>{if($('#update').dataset.kind==='online'){openUpdates();return;}const r=await act('update');if(r?.reloading)notice('正在更新，稍后会自动重新打开圆桌记录。');};
+initUpdates({dialog,act,busy:()=>busy(model?.session),changed:()=>{if(model)renderUpdate();}});
 async function panelVisibility(){if(!main)return;const data=await chrome.storage.session.get('arena.panel.'+windowId),open=!!data['arena.panel.'+windowId];$('#dock').hidden=open;$('#panel-active').hidden=!open;if(!open&&model)scheduleRefresh();}
 chrome.storage.onChanged.addListener((changes,area)=>{if(area==='session'&&changes['arena.panel.'+windowId])panelVisibility().catch(e=>error(e.message));if(area!=='local')return;const draft=changes['arena.draft.'+model?.session.id]?.newValue;if(draft&&model){const known=confirmedDrafts.get(model.session.id);if(!known||(draft.revision||0)>=(known.revision||0)){confirmedDrafts.set(model.session.id,draft);if(!pendingDrafts){model.draft=draft;renderController();}}}if(Object.keys(changes).some(k=>k==='arena.preferences'||k==='arena.index'||k==='arena.session.'+model?.session.id))scheduleRefresh();});
 function connectPanel(){port=chrome.runtime.connect({name:'arena-panel:'+windowId});port.postMessage({visible:!document.hidden});port.onDisconnect.addListener(()=>{setTimeout(()=>{try{connectPanel();scheduleRefresh();}catch(e){error('侧栏重新连接失败：'+e.message);}},300);});}
