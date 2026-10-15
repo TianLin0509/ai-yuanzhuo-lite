@@ -101,7 +101,7 @@ export function createWorkspaces(chrome, {loadSession, createSession, mutate, ge
   function main(sessionId){const result=openQueue.then(()=>openMain(sessionId));openQueue=result.catch(()=>{});return result;}
   async function forget(windowId){await ready;await serial(()=>persist(Object.fromEntries(Object.entries(owners).filter(([id])=>Number(id)!==windowId))));}
   async function requireWindow(sessionId){const windowId=await owner(sessionId);if(!windowId)throw new Error('圆桌窗口已关闭或尚未绑定，已取消网页操作。请从历史列表重新打开。');await chrome.windows.get(windowId);return windowId;}
-  async function validateTab(sessionId,tab){const windowId=await requireWindow(sessionId);if(tab.windowId!==windowId)throw new Error('成员标签页已移到其他窗口。请移回本圆桌窗口，或点“连接成员网页”重新连接。');}
+  async function validateTab(sessionId,tab){const windowId=await requireWindow(sessionId);if(tab.windowId!==windowId)throw new Error('成员标签页已移到其他窗口。请移回本圆桌窗口，或停止本轮后点成员名字重新打开。');}
   async function ownerForWindow(windowId){await ready;await queue;return owners[windowId]||null;}
   // After an extension update Chrome closes main pages but keeps windows and member tabs (same IDs).
   async function restoreAfterReload(){

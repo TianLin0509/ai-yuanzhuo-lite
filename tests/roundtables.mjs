@@ -25,6 +25,8 @@ try{
   const windowId=await page.evaluate(async()=>(await chrome.windows.getCurrent()).id);
   const providerTabs=async()=>(await page.evaluate(id=>chrome.tabs.query({windowId:id}),windowId)).filter(t=>providerFor(t.url||t.pendingUrl));
 
+  // The record page opens its members' pages by itself; this test replaces that roundtable, so close them below.
+  await until(async()=>(await providerTabs()).length===3,'member pages opened on load');const firstPages=(await providerTabs()).map(t=>t.id);
   // A finished roundtable whose members were in saved conversations.
   const initial=await command('state'),s=newSession([...DEFAULT_MEMBERS]);s.id=initial.session.id;s.title='找回测试 · 旧圆桌';
   const r=makeRound('ask','旧圆桌的问题',s);r.createdAt=Date.now()-5*60000;s.createdAt=r.createdAt-60000;
@@ -33,6 +35,7 @@ try{
   s.rounds.push(r);s.bindings=Object.fromEntries(Object.entries(conversation).map(([p,url])=>[p,{url}]));
   await page.evaluate(async s=>{const data=await chrome.storage.local.get('arena.index'),index=data['arena.index'];index.sessions[0]={id:s.id,title:s.title,rounds:1,updatedAt:Date.now()-5*60000};await chrome.storage.local.set({['arena.session.'+s.id]:s,'arena.index':index});},s);
   const cdp=await context.browser().newBrowserCDPSession();const sw=(await cdp.send('Target.getTargets')).targetInfos.find(t=>t.url===worker.url());await cdp.send('Target.closeTarget',{targetId:sw.targetId});
+  await page.evaluate(ids=>chrome.tabs.remove(ids),firstPages);
   await page.reload();await until(async()=>(await command('state')).session.rounds.length===1,'seeded record');
   const migrated=(await command('state')).index.sessions.find(m=>m.id===s.id);assert.deepEqual(migrated.members,DEFAULT_MEMBERS);assert(migrated.createdAt);
   checks.push('Older index entries gain members and creation time without losing their order');
@@ -48,6 +51,7 @@ try{
   await until(async()=>(await providerTabs()).every(t=>(t.url||'').includes('unrelated-user-tab')),'member tabs closed, unrelated tab kept');
   assert(context.pages().includes(unrelated)&&!unrelated.isClosed(),'a tab the roundtable did not open stays open');
   await until(()=>page.url().includes(encodeURIComponent(empty.id)),'record page follows the window');
+  await page.waitForTimeout(1500);assert((await providerTabs()).every(t=>(t.url||'').includes('unrelated-user-tab')),'the empty roundtable left by closing does not open member pages by itself');
   const kept=await page.evaluate(id=>chrome.storage.local.get('arena.session.'+id).then(d=>d['arena.session.'+id]),s.id);
   assert.equal(kept.rounds[0].jobs[0].text,'deepseek_OLD_ANSWER');for(const [p,b] of Object.entries(kept.bindings)){assert.equal(b.tabId,undefined);assert.equal(b.url,conversation[p]);}
   checks.push('Close keeps the full record and conversation URLs, closes only its own AI tabs, and leaves an empty roundtable in the window');

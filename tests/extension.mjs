@@ -21,7 +21,8 @@ try{
  await panel.locator('[data-layout="c"]').click();await panel.waitForFunction(()=>document.querySelector('[data-layout="c"]').getAttribute('aria-pressed')==='true');
  const done=async(expectedRounds)=>{const deadline=Date.now()+30000;let state;while(Date.now()<deadline){state=await getState();const jobs=state.session.rounds.at(-1)?.jobs;if((!expectedRounds||state.session.rounds.length===expectedRounds)&&jobs?.length===3&&jobs.every(j=>j.status==='done')){await panel.waitForFunction(()=>document.querySelectorAll('.state[data-status="done"]').length===3);return;}await new Promise(resolve=>setTimeout(resolve,150));}throw new Error('Completion timeout: '+JSON.stringify(state.session.rounds.at(-1)?.jobs.map(j=>({provider:j.provider,status:j.status,error:j.error}))));};
  const untouched=await context.newPage();await untouched.goto('https://chat.deepseek.com/unrelated');
- await panel.locator('#connect').click();await panel.waitForFunction(()=>document.querySelectorAll('.member-chip.connected').length===3);
+ // Member pages open by themselves when the roundtable page loads (no connect step).
+ await panel.waitForFunction(()=>document.querySelectorAll('.member-chip.connected').length===3);
  let state=await getState();const tabs={};for(const [provider,binding] of Object.entries(state.session.bindings)){for(let attempt=0;attempt<100;attempt++){tabs[provider]=context.pages().find(p=>providerFor(p.url())===provider&&p!==untouched);if(tabs[provider])break;await new Promise(resolve=>setTimeout(resolve,50));}assert(tabs[provider],provider+' tab must finish navigation');await tabs[provider].goto(PROVIDERS[provider].url);await tabs[provider].waitForFunction(()=>!!globalThis.__fixture);}
  checks.push('Real MV3 service worker, storage, sidepanel page, and three isolated site bindings');
  const prompt='第一轮原文\n— 第二行 <>&\n不要拆成多条问题';

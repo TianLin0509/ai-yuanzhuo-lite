@@ -8,7 +8,8 @@ import {newSession,makeRound,PROVIDERS,DEFAULT_MEMBERS,providerFor} from '../src
 await import('../scripts/build.mjs');
 const root=path.resolve(import.meta.dirname,'..'),out=path.join(root,'artifacts','20260912-desktop-codex');fs.mkdirSync(out,{recursive:true});
 const profileRoot=process.platform==='win32'?'C:/VibeData/BrowserProfiles/AI-Yuanzhuo-Lite/tests':os.tmpdir();fs.mkdirSync(profileRoot,{recursive:true});
-const context=await chromium.launchPersistentContext(fs.mkdtempSync(path.join(profileRoot,'desktop-')),{channel:'chromium',headless:true,args:[`--disable-extensions-except=${path.join(root,'dist')}`,`--load-extension=${path.join(root,'dist')}`],viewport:{width:1440,height:1000}});
+// DNS is blocked: member pages now open as soon as a record page loads, before Playwright can intercept their first load.
+const context=await chromium.launchPersistentContext(fs.mkdtempSync(path.join(profileRoot,'desktop-')),{channel:'chromium',headless:true,args:[`--disable-extensions-except=${path.join(root,'dist')}`,`--load-extension=${path.join(root,'dist')}`,'--host-resolver-rules=MAP * ~NOTFOUND'],viewport:{width:1440,height:1000}});
 const failures=[],checks=[];context.on('page',p=>p.on('pageerror',e=>failures.push(e.message)));
 const wait=ms=>new Promise(r=>setTimeout(r,ms));
 async function until(fn,description){const start=Date.now();while(Date.now()-start<15000){if(await fn())return;await wait(80);}throw Error('Timed out: '+description);}
