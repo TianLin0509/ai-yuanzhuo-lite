@@ -71,11 +71,13 @@ function startedChat(provider,saved,here){const pattern=PROVIDERS[provider].conv
 // address now (the tab id is certainly valid in this browser session) so later reloads re-bind by exact address.
 // Only right after our own send fails, only for this roundtable's tab in its own window, and only with positive
 // evidence: the chat's latest question must be this round's text. A chat the user opened is never adopted.
-const letters=text=>String(text).replace(/[\s\p{P}\p{Z}]/gu,'');
+// Same rule as promptShown in the content script: the site may render Markdown or linkify URLs in the question.
+const letters=text=>String(text).replace(/[\s\p{P}\p{S}\p{Z}]/gu,'').toLowerCase();
+function promptShown(text,prompt){const page=letters(text),want=[...letters(prompt)];if(!want.length)return false;if(page.includes(want.join('')))return true;if(page.length>want.length*1.2+40)return false;let i=0;for(const ch of page)if(ch===want[i]&&++i===want.length)return true;return false;}
 async function followStartedChat(ref){try{
   const s=await loadSession(ref.sessionId),job=findJob(s,ref.roundId,ref.jobId),binding=s.bindings[job?.provider];if(!job?.tabId||!job.prompt||job.phase!=='attempted'||binding?.tabId!==job.tabId)return;
   const tab=await chrome.tabs.get(job.tabId),here=tab.url||'';if(tab.windowId!==await workspaces.owner(ref.sessionId)||!startedChat(job.provider,binding.url,here))return;
-  const page=await pageMessage(tab.id,{type:'YZ_LATEST_QUESTION',provider:job.provider});if(!page.question||cleanUrl(page.url)!==cleanUrl(here)||!letters(page.question).includes(letters(job.prompt)))return;
+  const page=await pageMessage(tab.id,{type:'YZ_LATEST_QUESTION',provider:job.provider});if(!page.question||cleanUrl(page.url)!==cleanUrl(here)||!promptShown(page.question,job.prompt))return;
   await mutate(ref.sessionId,x=>{if(x.bindings[job.provider]?.tabId===tab.id&&x.bindings[job.provider].url===binding.url)x.bindings[job.provider]={tabId:tab.id,url:here};});
 }catch(error){console.info('[AI圆桌lite] 未能记录新对话地址',error.message);}}
 function fellBack(provider,saved,here){const pattern=PROVIDERS[provider].conversation;try{return !!pattern&&providerFor(here)===provider&&pattern.test(new URL(saved).pathname)&&!pattern.test(new URL(here).pathname);}catch{return false;}}
